@@ -20,6 +20,7 @@
         <span>Grid {{ gridSize }} mm</span>
         <span>{{ pointerText }}</span>
         <span v-if="selectedIds.length">Selected {{ selectedIds.length }}</span>
+        <span v-if="activeConstraintTool">约束 {{ constraintName(activeConstraintTool) }}</span>
         <div class="history-actions">
           <button :disabled="!canUndo" title="撤销 Ctrl+Z" @click="undo">Undo</button>
           <button :disabled="!canRedo" title="重做 Ctrl+Y" @click="redo">Redo</button>
@@ -41,162 +42,271 @@
     </section>
 
     <aside class="panel">
-      <section>
-        <h2>属性</h2>
-        <p v-if="selectedIds.length > 1" class="empty">已选择 {{ selectedIds.length }} 个对象，可拖动或批量删除。</p>
-        <template v-else-if="selectedEntity">
-          <div class="field">
-            <label>类型</label>
-            <output>{{ entityName(selectedEntity) }}</output>
-          </div>
+      <div class="panel-switch" role="tablist" aria-label="右侧面板">
+        <button
+          :class="{ active: panelMode === 'properties' }"
+          role="tab"
+          :aria-selected="panelMode === 'properties'"
+          @click="panelMode = 'properties'"
+        >
+          属性
+        </button>
+        <button
+          :class="{ active: panelMode === 'constraints' }"
+          role="tab"
+          :aria-selected="panelMode === 'constraints'"
+          @click="panelMode = 'constraints'"
+        >
+          约束
+          <span>{{ constraints.length }}</span>
+        </button>
+      </div>
 
+      <div v-if="panelMode === 'properties'" class="panel-page">
+        <section>
+          <h2>属性</h2>
+          <p v-if="selectedIds.length > 1" class="empty">已选择 {{ selectedIds.length }} 个对象，可拖动或批量删除。</p>
+          <template v-else-if="selectedEntity">
+            <div class="field">
+              <label>类型</label>
+              <output>{{ entityName(selectedEntity) }}</output>
+            </div>
+
+            <div class="field">
+              <label>图层</label>
+              <select :value="selectedEntity.layerId" @change="setSelectedLayer($event.target.value)">
+                <option v-for="layer in layers" :key="layer.id" :value="layer.id">
+                  {{ layer.name }}
+                </option>
+              </select>
+            </div>
+
+            <template v-if="selectedEntity.type === 'line'">
+              <div class="field">
+                <label>长度 mm</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  :value="lineLength(selectedEntity).toFixed(1)"
+                  @change="setLineLength($event.target.value)"
+                />
+              </div>
+            </template>
+
+            <template v-if="selectedEntity.type === 'circle'">
+              <div class="field">
+                <label>半径 mm</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  :value="selectedEntity.r.toFixed(1)"
+                  @change="setCircleRadius($event.target.value)"
+                />
+              </div>
+            </template>
+
+            <template v-if="selectedEntity.type === 'ellipse'">
+              <div class="field">
+                <label>横向半径 mm</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  :value="selectedEntity.rx.toFixed(1)"
+                  @change="setEllipseRadius('rx', $event.target.value)"
+                />
+              </div>
+              <div class="field">
+                <label>纵向半径 mm</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  :value="selectedEntity.ry.toFixed(1)"
+                  @change="setEllipseRadius('ry', $event.target.value)"
+                />
+              </div>
+            </template>
+
+            <template v-if="selectedEntity.type === 'rect'">
+              <div class="field">
+                <label>宽度 mm</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  :value="Math.abs(selectedEntity.w).toFixed(1)"
+                  @change="setRectSize('w', $event.target.value)"
+                />
+              </div>
+              <div class="field">
+                <label>高度 mm</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  :value="Math.abs(selectedEntity.h).toFixed(1)"
+                  @change="setRectSize('h', $event.target.value)"
+                />
+              </div>
+            </template>
+
+            <template v-if="selectedEntity.type === 'arc'">
+              <div class="field">
+                <label>弧长 mm</label>
+                <output>{{ arcLength(selectedEntity).toFixed(1) }}</output>
+              </div>
+            </template>
+
+            <template v-if="selectedEntity.type === 'triangle' || selectedEntity.type === 'polyline'">
+              <div class="field">
+                <label>总长度 mm</label>
+                <output>{{ entityPathLength(selectedEntity).toFixed(1) }}</output>
+              </div>
+            </template>
+
+            <button class="danger" @click="deleteSelected">删除</button>
+          </template>
+          <p v-else class="empty">选择一个对象后可以输入精确尺寸。</p>
+          <button v-if="selectedIds.length > 1" class="danger" @click="deleteSelected">删除所选</button>
+        </section>
+
+        <section>
+          <div class="section-heading">
+            <h2>图层</h2>
+            <button title="新增图层" @click="addLayer">+</button>
+          </div>
           <div class="field">
-            <label>图层</label>
-            <select :value="selectedEntity.layerId" @change="setSelectedLayer($event.target.value)">
+            <label>当前图层</label>
+            <select v-model.number="currentLayerId">
               <option v-for="layer in layers" :key="layer.id" :value="layer.id">
                 {{ layer.name }}
               </option>
             </select>
           </div>
-
-          <template v-if="selectedEntity.type === 'line'">
-            <div class="field">
-              <label>长度 mm</label>
-              <input
-                type="number"
-                min="1"
-                step="1"
-                :value="lineLength(selectedEntity).toFixed(1)"
-                @change="setLineLength($event.target.value)"
-              />
+          <div class="layer-list">
+            <div
+              v-for="layer in layers"
+              :key="layer.id"
+              class="layer-row"
+              :class="{ active: layer.id === currentLayerId }"
+            >
+              <input class="swatch" type="color" :value="layer.color" title="图层颜色" @change="setLayerColor(layer.id, $event.target.value)" />
+              <input :value="layer.name" @change="renameLayer(layer.id, $event.target.value)" />
+              <button :class="{ active: layer.visible }" title="显示/隐藏" @click="toggleLayerVisible(layer.id)">
+                {{ layer.visible ? '显' : '隐' }}
+              </button>
+              <button :class="{ active: layer.locked }" title="锁定/解锁" @click="toggleLayerLocked(layer.id)">
+                {{ layer.locked ? '锁' : '开' }}
+              </button>
             </div>
-          </template>
+          </div>
+        </section>
 
-          <template v-if="selectedEntity.type === 'circle'">
-            <div class="field">
-              <label>半径 mm</label>
-              <input
-                type="number"
-                min="1"
-                step="1"
-                :value="selectedEntity.r.toFixed(1)"
-                @change="setCircleRadius($event.target.value)"
-              />
-            </div>
-          </template>
-
-          <template v-if="selectedEntity.type === 'ellipse'">
-            <div class="field">
-              <label>横向半径 mm</label>
-              <input
-                type="number"
-                min="1"
-                step="1"
-                :value="selectedEntity.rx.toFixed(1)"
-                @change="setEllipseRadius('rx', $event.target.value)"
-              />
-            </div>
-            <div class="field">
-              <label>纵向半径 mm</label>
-              <input
-                type="number"
-                min="1"
-                step="1"
-                :value="selectedEntity.ry.toFixed(1)"
-                @change="setEllipseRadius('ry', $event.target.value)"
-              />
-            </div>
-          </template>
-
-          <template v-if="selectedEntity.type === 'rect'">
-            <div class="field">
-              <label>宽度 mm</label>
-              <input
-                type="number"
-                min="1"
-                step="1"
-                :value="Math.abs(selectedEntity.w).toFixed(1)"
-                @change="setRectSize('w', $event.target.value)"
-              />
-            </div>
-            <div class="field">
-              <label>高度 mm</label>
-              <input
-                type="number"
-                min="1"
-                step="1"
-                :value="Math.abs(selectedEntity.h).toFixed(1)"
-                @change="setRectSize('h', $event.target.value)"
-              />
-            </div>
-          </template>
-
-          <template v-if="selectedEntity.type === 'arc'">
-            <div class="field">
-              <label>弧长 mm</label>
-              <output>{{ arcLength(selectedEntity).toFixed(1) }}</output>
-            </div>
-          </template>
-
-          <template v-if="selectedEntity.type === 'triangle' || selectedEntity.type === 'polyline'">
-            <div class="field">
-              <label>总长度 mm</label>
-              <output>{{ entityPathLength(selectedEntity).toFixed(1) }}</output>
-            </div>
-          </template>
-
-          <button class="danger" @click="deleteSelected">删除</button>
-        </template>
-        <p v-else class="empty">选择一个对象后可以输入精确尺寸。</p>
-        <button v-if="selectedIds.length > 1" class="danger" @click="deleteSelected">删除所选</button>
-      </section>
-
-      <section>
-        <div class="section-heading">
-          <h2>图层</h2>
-          <button title="新增图层" @click="addLayer">+</button>
-        </div>
-        <div class="field">
-          <label>当前图层</label>
-          <select v-model.number="currentLayerId">
-            <option v-for="layer in layers" :key="layer.id" :value="layer.id">
-              {{ layer.name }}
-            </option>
-          </select>
-        </div>
-        <div class="layer-list">
-          <div
-            v-for="layer in layers"
-            :key="layer.id"
-            class="layer-row"
-            :class="{ active: layer.id === currentLayerId }"
-          >
-            <input class="swatch" type="color" :value="layer.color" title="图层颜色" @change="setLayerColor(layer.id, $event.target.value)" />
-            <input :value="layer.name" @change="renameLayer(layer.id, $event.target.value)" />
-            <button :class="{ active: layer.visible }" title="显示/隐藏" @click="toggleLayerVisible(layer.id)">
-              {{ layer.visible ? '显' : '隐' }}
-            </button>
-            <button :class="{ active: layer.locked }" title="锁定/解锁" @click="toggleLayerLocked(layer.id)">
-              {{ layer.locked ? '锁' : '开' }}
+        <section>
+          <h2>对象</h2>
+          <div class="entity-list">
+            <button
+              v-for="entity in visibleEntities"
+              :key="entity.id"
+              :class="{ selected: isSelected(entity.id) }"
+              :disabled="isLayerLocked(entity.layerId)"
+              @click="selectEntity(entity.id)"
+            >
+              {{ entityName(entity) }} #{{ entity.id }}
             </button>
           </div>
-        </div>
-      </section>
+        </section>
+      </div>
 
-      <section>
-        <h2>对象</h2>
-        <div class="entity-list">
-          <button
-            v-for="entity in visibleEntities"
-            :key="entity.id"
-            :class="{ selected: isSelected(entity.id) }"
-            :disabled="isLayerLocked(entity.layerId)"
-            @click="selectEntity(entity.id)"
-          >
-            {{ entityName(entity) }} #{{ entity.id }}
-          </button>
-        </div>
-      </section>
+      <div v-else class="panel-page">
+        <section>
+          <div class="section-heading">
+            <h2>约束</h2>
+            <span class="constraint-total">{{ constraints.length }}</span>
+          </div>
+
+          <div class="constraint-grid">
+            <button
+              v-for="item in constraintTools"
+              :key="item.id"
+              class="constraint-tool"
+              :class="{ active: activeConstraintTool === item.id }"
+              :title="item.title"
+              @click="selectConstraintTool(item.id)"
+            >
+              <span class="constraint-icon">{{ item.icon }}</span>
+              <span>{{ item.label }}</span>
+            </button>
+          </div>
+
+          <div v-if="activeConstraintToolData" class="constraint-editor">
+            <template v-if="activeConstraintToolData.target === 'line'">
+              <div class="field">
+                <label>目标直线</label>
+                <select v-model.number="pendingConstraint.entityId">
+                  <option v-for="option in lineRefOptions" :key="option.value" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                  <option v-if="!lineRefOptions.length" value="" disabled>暂无直线</option>
+                </select>
+              </div>
+            </template>
+
+            <template v-else-if="activeConstraintToolData.target === 'point'">
+              <div class="field">
+                <label>目标点</label>
+                <select v-model="pendingConstraint.refA">
+                  <option v-for="option in pointRefOptions" :key="option.value" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                  <option v-if="!pointRefOptions.length" value="" disabled>暂无可选点</option>
+                </select>
+              </div>
+            </template>
+
+            <template v-else-if="activeConstraintToolData.target === 'point-pair'">
+              <div class="field">
+                <label>点 A</label>
+                <select v-model="pendingConstraint.refA">
+                  <option v-for="option in pointRefOptions" :key="`a-${option.value}`" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                  <option v-if="!pointRefOptions.length" value="" disabled>暂无可选点</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>点 B</label>
+                <select v-model="pendingConstraint.refB">
+                  <option v-for="option in pointRefOptions" :key="`b-${option.value}`" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                  <option v-if="!pointRefOptions.length" value="" disabled>暂无可选点</option>
+                </select>
+              </div>
+            </template>
+
+            <div class="constraint-actions">
+              <button :disabled="!canCreatePendingConstraint" @click="createConstraintFromPending">添加</button>
+              <button class="ghost" @click="cancelConstraintTool">取消</button>
+            </div>
+          </div>
+
+          <div v-if="constraints.length" class="constraint-list">
+            <div v-for="constraint in constraints" :key="constraint.id" class="constraint-row">
+              <span class="constraint-badge">{{ constraintIcon(constraint.type) }}</span>
+              <div>
+                <strong>{{ constraintName(constraint.type) }}</strong>
+                <span>{{ constraintSummary(constraint) }}</span>
+              </div>
+              <button title="删除约束" @click="removeConstraint(constraint.id)">×</button>
+            </div>
+          </div>
+          <p v-else class="empty">暂无约束</p>
+        </section>
+      </div>
     </aside>
   </main>
 </template>
@@ -219,24 +329,34 @@ const tools = [
   { id: 'triangle', label: '三角形', icon: '△', title: '点击三个顶点画三角形' },
   { id: 'polyline', label: '多段线', icon: '⌁', title: '连续点击加点，Enter 或双击完成' },
 ];
+const constraintTools = [
+  { id: 'coincident', label: '重合', icon: '◎', title: '两点保持同一位置', target: 'point-pair' },
+  { id: 'horizontal', label: '水平', icon: '—', title: '直线保持水平', target: 'line' },
+  { id: 'vertical', label: '垂直', icon: '│', title: '直线保持垂直', target: 'line' },
+  { id: 'fixed', label: '固定', icon: '⌖', title: '点保持当前位置', target: 'point' },
+];
 const layerColors = ['#c7d7ea', '#74c69d', '#6bb7ff', '#f6c85f', '#f28b82', '#c084fc', '#7dd3fc'];
 
 const tool = ref('select');
 const gridSize = 25;
 const snapEnabled = true;
 const entities = reactive([]);
+const constraints = reactive([]);
 const layers = reactive([
   { id: 1, name: '默认', color: '#c7d7ea', visible: true, locked: false },
   { id: 2, name: '尺寸', color: '#74c69d', visible: true, locked: false },
   { id: 3, name: '辅助线', color: '#6bb7ff', visible: true, locked: false },
 ]);
 const currentLayerId = ref(1);
+const panelMode = ref('properties');
 const selectedIds = ref([]);
 const pointer = reactive({ x: 0, y: 0 });
 const draft = ref(null);
 const drag = ref(null);
 const handleDrag = ref(null);
 const lasso = ref(null);
+const activeConstraintTool = ref(null);
+const pendingConstraint = reactive({ entityId: '', refA: '', refB: '' });
 const undoStack = ref([]);
 const redoStack = ref([]);
 
@@ -248,11 +368,33 @@ let colorLocation = null;
 let buffer = null;
 let nextId = 1;
 let nextLayerId = 4;
+let nextConstraintId = 1;
 
 const selectedId = computed(() => selectedIds.value[0] ?? null);
 const selectedEntity = computed(() => entities.find((item) => item.id === selectedId.value) || null);
 const selectedEntities = computed(() => entities.filter((item) => selectedIds.value.includes(item.id)));
 const visibleEntities = computed(() => entities.filter((entity) => isLayerVisible(entity.layerId)));
+const activeConstraintToolData = computed(() => constraintTools.find((item) => item.id === activeConstraintTool.value) || null);
+const lineRefOptions = computed(() =>
+  visibleEntities.value
+    .filter((entity) => entity.type === 'line' && !isLayerLocked(entity.layerId))
+    .map((entity) => ({ value: entity.id, label: `${entityName(entity)} #${entity.id}` })),
+);
+const pointRefOptions = computed(() =>
+  visibleEntities.value
+    .filter((entity) => !isLayerLocked(entity.layerId))
+    .flatMap((entity) => constraintPointRefs(entity)),
+);
+const canCreatePendingConstraint = computed(() => {
+  const toolData = activeConstraintToolData.value;
+  if (!toolData) return false;
+  if (toolData.target === 'line') return lineRefOptions.value.some((option) => option.value === Number(pendingConstraint.entityId));
+  if (toolData.target === 'point') return Boolean(pendingConstraint.refA);
+  if (toolData.target === 'point-pair') {
+    return Boolean(pendingConstraint.refA && pendingConstraint.refB && pendingConstraint.refA !== pendingConstraint.refB);
+  }
+  return false;
+});
 const canUndo = computed(() => undoStack.value.length > 0);
 const canRedo = computed(() => redoStack.value.length > 0);
 const pointerText = computed(() => `X ${pointer.x.toFixed(0)} / Y ${pointer.y.toFixed(0)}`);
@@ -303,6 +445,187 @@ function entityName(entity) {
   return '矩形';
 }
 
+function constraintName(type) {
+  const toolData = constraintTools.find((item) => item.id === type);
+  return toolData?.label || '约束';
+}
+
+function constraintIcon(type) {
+  const toolData = constraintTools.find((item) => item.id === type);
+  return toolData?.icon || '?';
+}
+
+function selectConstraintTool(type) {
+  activeConstraintTool.value = activeConstraintTool.value === type ? null : type;
+  if (activeConstraintTool.value) primePendingConstraint(activeConstraintTool.value);
+}
+
+function cancelConstraintTool() {
+  activeConstraintTool.value = null;
+}
+
+function primePendingConstraint(type) {
+  pendingConstraint.entityId = '';
+  pendingConstraint.refA = '';
+  pendingConstraint.refB = '';
+
+  const selectedLine = selectedEntities.value.find((entity) => entity.type === 'line');
+  if (type === 'horizontal' || type === 'vertical') {
+    pendingConstraint.entityId = selectedLine?.id ?? lineRefOptions.value[0]?.value ?? '';
+    return;
+  }
+
+  const preferredPoints = selectedEntities.value.flatMap((entity) => constraintPointRefs(entity));
+  const options = preferredPoints.length ? preferredPoints : pointRefOptions.value;
+  pendingConstraint.refA = options[0]?.value ?? '';
+  pendingConstraint.refB = options[1]?.value ?? '';
+}
+
+function createConstraintFromPending() {
+  const toolData = activeConstraintToolData.value;
+  if (!toolData || !canCreatePendingConstraint.value) return;
+
+  const constraint = {
+    id: nextConstraintId++,
+    type: toolData.id,
+    refs: [],
+  };
+
+  if (toolData.target === 'line') {
+    constraint.refs = [{ entityId: Number(pendingConstraint.entityId) }];
+  } else if (toolData.target === 'point') {
+    constraint.refs = [decodePointRef(pendingConstraint.refA)];
+  } else if (toolData.target === 'point-pair') {
+    constraint.refs = [decodePointRef(pendingConstraint.refA), decodePointRef(pendingConstraint.refB)];
+  }
+
+  recordHistory();
+  removeConflictingDirectionalConstraints(constraint);
+  constraints.push(constraint);
+  applyLineOrientationConstraints({ entityId: constraint.refs[0]?.entityId });
+  activeConstraintTool.value = null;
+  render();
+}
+
+function removeConflictingDirectionalConstraints(nextConstraint) {
+  if (nextConstraint.type !== 'horizontal' && nextConstraint.type !== 'vertical') return;
+  const entityId = nextConstraint.refs[0]?.entityId;
+  if (!entityId) return;
+  for (let i = constraints.length - 1; i >= 0; i -= 1) {
+    const constraint = constraints[i];
+    const isSameLine = constraint.refs[0]?.entityId === entityId;
+    const isDirectional = constraint.type === 'horizontal' || constraint.type === 'vertical';
+    if (isSameLine && isDirectional) constraints.splice(i, 1);
+  }
+}
+
+function applyLineOrientationConstraints(active = {}) {
+  for (const constraint of constraints) {
+    if (constraint.type !== 'horizontal' && constraint.type !== 'vertical') continue;
+    const entityId = constraint.refs[0]?.entityId;
+    if (active.entityId && entityId !== active.entityId) continue;
+    enforceLineOrientationConstraint(constraint, active);
+  }
+}
+
+function enforceLineOrientationConstraint(constraint, active = {}) {
+  const entityId = constraint.refs[0]?.entityId;
+  const entity = entities.find((item) => item.id === entityId);
+  if (!entity || entity.type !== 'line') return;
+
+  const activeHandle = active.entityId === entity.id ? active.handle : null;
+  const dx = entity.x2 - entity.x1;
+  const dy = entity.y2 - entity.y1;
+  const length = Math.hypot(dx, dy) || gridSize;
+  if (constraint.type === 'horizontal') {
+    if (activeHandle === 'end') entity.y1 = entity.y2;
+    else {
+      entity.y2 = entity.y1;
+      if (!activeHandle && Math.abs(dx) < 0.001) entity.x2 = entity.x1 + length;
+    }
+  }
+  if (constraint.type === 'vertical') {
+    if (activeHandle === 'end') entity.x1 = entity.x2;
+    else {
+      entity.x2 = entity.x1;
+      if (!activeHandle && Math.abs(dy) < 0.001) entity.y2 = entity.y1 + length;
+    }
+  }
+}
+
+function removeConstraint(id) {
+  const index = constraints.findIndex((constraint) => constraint.id === id);
+  if (index < 0) return;
+  recordHistory();
+  constraints.splice(index, 1);
+  render();
+}
+
+function constraintSummary(constraint) {
+  if (constraint.type === 'horizontal' || constraint.type === 'vertical') {
+    return constraintEntityLabel(constraint.refs[0]?.entityId);
+  }
+  if (constraint.type === 'fixed') return constraintPointLabel(constraint.refs[0]);
+  if (constraint.type === 'coincident') {
+    return `${constraintPointLabel(constraint.refs[0])} = ${constraintPointLabel(constraint.refs[1])}`;
+  }
+  return constraint.refs.map((ref) => constraintPointLabel(ref)).join(', ');
+}
+
+function constraintEntityLabel(entityId) {
+  const entity = entities.find((item) => item.id === entityId);
+  return entity ? `${entityName(entity)} #${entity.id}` : `对象 #${entityId}`;
+}
+
+function constraintPointLabel(ref) {
+  if (!ref) return '未指定';
+  const entity = entities.find((item) => item.id === ref.entityId);
+  const name = entity ? `${entityName(entity)} #${entity.id}` : `对象 #${ref.entityId}`;
+  return `${name} / ${handleLabel(ref.handle)}`;
+}
+
+function constraintPointRefs(entity) {
+  const handles = [];
+  if (entity.type === 'line') {
+    handles.push('start', 'end');
+  } else if (entity.type === 'circle' || entity.type === 'ellipse') {
+    handles.push('center');
+  } else if (entity.type === 'arc' || entity.type === 'triangle' || entity.type === 'polyline') {
+    for (let i = 0; i < entity.points.length; i += 1) handles.push(`p${i}`);
+  } else {
+    handles.push('nw', 'ne', 'se', 'sw');
+  }
+
+  return handles.map((handle) => ({
+    value: encodePointRef({ entityId: entity.id, handle }),
+    label: `${entityName(entity)} #${entity.id} / ${handleLabel(handle)}`,
+  }));
+}
+
+function encodePointRef(ref) {
+  return `${ref.entityId}:${ref.handle}`;
+}
+
+function decodePointRef(value) {
+  const [entityId, handle] = String(value).split(':');
+  return { entityId: Number(entityId), handle };
+}
+
+function handleLabel(handle) {
+  const labels = {
+    start: '起点',
+    end: '终点',
+    center: '中心',
+    nw: '左上',
+    ne: '右上',
+    se: '右下',
+    sw: '左下',
+  };
+  if (labels[handle]) return labels[handle];
+  if (handle?.startsWith('p')) return `点 ${Number(handle.slice(1)) + 1}`;
+  return handle || '点';
+}
+
 function lineLength(line) {
   return Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
 }
@@ -327,6 +650,7 @@ function setLineLength(rawValue) {
   const dy = (entity.y2 - entity.y1) / length;
   entity.x2 = entity.x1 + dx * value;
   entity.y2 = entity.y1 + dy * value;
+  applyLineOrientationConstraints({ entityId: entity.id });
   render();
 }
 
@@ -445,6 +769,9 @@ function deleteSelected() {
   for (let i = entities.length - 1; i >= 0; i -= 1) {
     if (selected.has(entities[i].id)) entities.splice(i, 1);
   }
+  for (let i = constraints.length - 1; i >= 0; i -= 1) {
+    if (constraintTouchesEntities(constraints[i], selected)) constraints.splice(i, 1);
+  }
   selectedIds.value = [];
   render();
 }
@@ -452,11 +779,13 @@ function deleteSelected() {
 function recordHistory() {
   undoStack.value.push({
     entities: cloneEntities(),
+    constraints: cloneConstraints(),
     layers: cloneLayers(),
     currentLayerId: currentLayerId.value,
     selectedIds: [...selectedIds.value],
     nextId,
     nextLayerId,
+    nextConstraintId,
   });
   redoStack.value = [];
 }
@@ -465,11 +794,13 @@ function undo() {
   if (!undoStack.value.length) return;
   redoStack.value.push({
     entities: cloneEntities(),
+    constraints: cloneConstraints(),
     layers: cloneLayers(),
     currentLayerId: currentLayerId.value,
     selectedIds: [...selectedIds.value],
     nextId,
     nextLayerId,
+    nextConstraintId,
   });
   restoreSnapshot(undoStack.value.pop());
 }
@@ -478,31 +809,40 @@ function redo() {
   if (!redoStack.value.length) return;
   undoStack.value.push({
     entities: cloneEntities(),
+    constraints: cloneConstraints(),
     layers: cloneLayers(),
     currentLayerId: currentLayerId.value,
     selectedIds: [...selectedIds.value],
     nextId,
     nextLayerId,
+    nextConstraintId,
   });
   restoreSnapshot(redoStack.value.pop());
 }
 
 function restoreSnapshot(snapshot) {
   entities.splice(0, entities.length, ...snapshot.entities.map((entity) => cloneEntity(entity)));
+  constraints.splice(0, constraints.length, ...(snapshot.constraints ?? []).map((constraint) => cloneConstraint(constraint)));
   layers.splice(0, layers.length, ...snapshot.layers.map((layer) => ({ ...layer })));
   currentLayerId.value = snapshot.currentLayerId;
   selectedIds.value = snapshot.selectedIds.filter((id) => entities.some((entity) => entity.id === id));
   nextId = snapshot.nextId;
   nextLayerId = snapshot.nextLayerId;
+  nextConstraintId = snapshot.nextConstraintId ?? nextConstraintId;
   draft.value = null;
   drag.value = null;
   handleDrag.value = null;
   lasso.value = null;
+  activeConstraintTool.value = null;
   render();
 }
 
 function cloneEntities() {
   return entities.map((entity) => cloneEntity(entity));
+}
+
+function cloneConstraints() {
+  return constraints.map((constraint) => cloneConstraint(constraint));
 }
 
 function cloneLayers() {
@@ -655,7 +995,10 @@ function onPointerMove(event) {
       handleDrag.value.historyRecorded = true;
     }
     const entity = entities.find((item) => item.id === handleDrag.value.entityId);
-    if (entity) moveHandleFromOriginal(entity, handleDrag.value.original, handleDrag.value.handle, point);
+    if (entity) {
+      moveHandleFromOriginal(entity, handleDrag.value.original, handleDrag.value.handle, point);
+      applyLineOrientationConstraints({ entityId: entity.id, handle: handleDrag.value.handle });
+    }
     render();
     return;
   }
@@ -858,6 +1201,18 @@ function cloneEntity(entity) {
     return { ...base, points: entity.points.map(clonePoint) };
   }
   return { ...base, x: entity.x, y: entity.y, w: entity.w, h: entity.h };
+}
+
+function cloneConstraint(constraint) {
+  return {
+    id: constraint.id,
+    type: constraint.type,
+    refs: constraint.refs.map((ref) => ({ ...ref })),
+  };
+}
+
+function constraintTouchesEntities(constraint, entityIds) {
+  return constraint.refs.some((ref) => entityIds.has(ref.entityId));
 }
 
 function clonePoint(point) {
@@ -1529,7 +1884,7 @@ onUnmounted(() => {
 <style scoped>
 .cad-shell {
   display: grid;
-  grid-template-columns: 116px minmax(0, 1fr) 260px;
+  grid-template-columns: 116px minmax(0, 1fr) 300px;
   width: 100%;
   height: 100%;
   overflow: hidden;
@@ -1558,7 +1913,11 @@ onUnmounted(() => {
 }
 
 .toolbar button,
+.panel-switch button,
 .entity-list button,
+.constraint-tool,
+.constraint-actions button,
+.constraint-row button,
 .danger {
   border: 1px solid #3a4350;
   background: #272d36;
@@ -1602,6 +1961,126 @@ onUnmounted(() => {
   border-color: #e7c84c;
   background: #443f25;
   color: #fff2a8;
+}
+
+.constraint-total {
+  min-width: 24px;
+  padding: 2px 8px;
+  border: 1px solid #3a4350;
+  border-radius: 999px;
+  color: #b9c3cf;
+  font-size: 12px;
+  text-align: center;
+}
+
+.constraint-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.constraint-tool {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  min-height: 38px;
+  padding: 0 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.constraint-tool.active {
+  border-color: #74c69d;
+  background: #1f3a30;
+  color: #c8f7dc;
+}
+
+.constraint-icon {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.constraint-editor {
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #343b46;
+  border-radius: 6px;
+  background: #1b2027;
+}
+
+.constraint-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.constraint-actions button {
+  min-height: 34px;
+  cursor: pointer;
+}
+
+.constraint-actions button:disabled {
+  color: #687383;
+  cursor: default;
+  opacity: 0.65;
+}
+
+.constraint-actions .ghost {
+  background: #20242b;
+}
+
+.constraint-list {
+  display: grid;
+  gap: 8px;
+}
+
+.constraint-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 7px;
+  border: 1px solid #343b46;
+  border-radius: 6px;
+  background: #1b2027;
+}
+
+.constraint-badge {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #24362f;
+  color: #9ee5bc;
+  font-size: 16px;
+}
+
+.constraint-row strong,
+.constraint-row span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.constraint-row strong {
+  color: #f3f7fb;
+  font-size: 13px;
+}
+
+.constraint-row span {
+  color: #99a6b5;
+  font-size: 12px;
+}
+
+.constraint-row button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  cursor: pointer;
 }
 
 .tool-icon {
@@ -1671,11 +2150,55 @@ onUnmounted(() => {
 }
 
 .panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border-width: 0 0 0 1px;
+  overflow: hidden;
+}
+
+.panel-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #343b46;
+  background: #1c2026;
+}
+
+.panel-switch button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  font-weight: 700;
+}
+
+.panel-switch button.active {
+  border-color: #ffe66d;
+  background: #f4d84f;
+  color: #11161c;
+}
+
+.panel-switch span {
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.panel-switch button.active span {
+  background: rgba(17, 22, 28, 0.16);
+}
+
+.panel-page {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  min-height: 0;
   padding: 14px;
-  border-width: 0 0 0 1px;
   overflow: auto;
 }
 
