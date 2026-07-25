@@ -74,7 +74,7 @@
 
             <div class="field">
               <label>图层</label>
-              <select :value="selectedEntity.layerId" @change="setSelectedLayer($event.target.value)">
+              <select :value="selectedEntity.layerId" @change="setSelectedLayer($event)">
                 <option v-for="layer in layers" :key="layer.id" :value="layer.id">
                   {{ layer.name }}
                 </option>
@@ -89,7 +89,7 @@
                   min="1"
                   step="1"
                   :value="lineLength(selectedEntity).toFixed(1)"
-                  @change="setLineLength($event.target.value)"
+                  @change="setLineLength($event)"
                 />
               </div>
             </template>
@@ -102,7 +102,7 @@
                   min="1"
                   step="1"
                   :value="selectedEntity.r.toFixed(1)"
-                  @change="setCircleRadius($event.target.value)"
+                  @change="setCircleRadius($event)"
                 />
               </div>
             </template>
@@ -115,7 +115,7 @@
                   min="1"
                   step="1"
                   :value="selectedEntity.rx.toFixed(1)"
-                  @change="setEllipseRadius('rx', $event.target.value)"
+                  @change="setEllipseRadius('rx', $event)"
                 />
               </div>
               <div class="field">
@@ -125,7 +125,7 @@
                   min="1"
                   step="1"
                   :value="selectedEntity.ry.toFixed(1)"
-                  @change="setEllipseRadius('ry', $event.target.value)"
+                  @change="setEllipseRadius('ry', $event)"
                 />
               </div>
             </template>
@@ -138,7 +138,7 @@
                   min="1"
                   step="1"
                   :value="Math.abs(selectedEntity.w).toFixed(1)"
-                  @change="setRectSize('w', $event.target.value)"
+                  @change="setRectSize('w', $event)"
                 />
               </div>
               <div class="field">
@@ -148,7 +148,7 @@
                   min="1"
                   step="1"
                   :value="Math.abs(selectedEntity.h).toFixed(1)"
-                  @change="setRectSize('h', $event.target.value)"
+                  @change="setRectSize('h', $event)"
                 />
               </div>
             </template>
@@ -193,8 +193,8 @@
               class="layer-row"
               :class="{ active: layer.id === currentLayerId }"
             >
-              <input class="swatch" type="color" :value="layer.color" title="图层颜色" @change="setLayerColor(layer.id, $event.target.value)" />
-              <input :value="layer.name" @change="renameLayer(layer.id, $event.target.value)" />
+              <input class="swatch" type="color" :value="layer.color" title="图层颜色" @change="setLayerColor(layer.id, $event)" />
+              <input :value="layer.name" @change="renameLayer(layer.id, $event)" />
               <button :class="{ active: layer.visible }" title="显示/隐藏" @click="toggleLayerVisible(layer.id)">
                 {{ layer.visible ? '显' : '隐' }}
               </button>
@@ -311,14 +311,41 @@
   </main>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
+import type {
+  Point,
+  Bounds,
+  Entity,
+  LineEntity,
+  ArcEntity,
+  TriangleEntity,
+  PolylineEntity,
+  Constraint,
+  ConstraintRef,
+  ConstraintType,
+  Layer,
+  ToolId,
+  DrawingToolId,
+  Draft,
+  DragState,
+  HandleDragState,
+  LassoState,
+  HistorySnapshot,
+  PendingConstraint,
+  OrientationActive,
+  Handle,
+  ToolDef,
+  ConstraintToolDef,
+  PanelMode,
+  RefOption,
+} from './types/cad';
 
-const stageRef = ref(null);
-const glCanvasRef = ref(null);
-const labelCanvasRef = ref(null);
+const stageRef = ref<HTMLElement | null>(null);
+const glCanvasRef = ref<HTMLCanvasElement | null>(null);
+const labelCanvasRef = ref<HTMLCanvasElement | null>(null);
 
-const tools = [
+const tools: ToolDef[] = [
   { id: 'select', label: '选择', icon: '↖', title: '选择和移动对象' },
   { id: 'lasso', label: '套索', icon: '⌁', title: '拖出自由套索，多选对象' },
   { id: 'line', label: '直线', icon: '/', title: '点击两点画线' },
@@ -329,7 +356,9 @@ const tools = [
   { id: 'triangle', label: '三角形', icon: '△', title: '点击三个顶点画三角形' },
   { id: 'polyline', label: '多段线', icon: '⌁', title: '连续点击加点，Enter 或双击完成' },
 ];
-const constraintTools = [
+
+// 在这里添加约束
+const constraintTools: ConstraintToolDef[] = [
   { id: 'coincident', label: '重合', icon: '◎', title: '两点保持同一位置', target: 'point-pair' },
   { id: 'horizontal', label: '水平', icon: '—', title: '直线保持水平', target: 'line' },
   { id: 'vertical', label: '垂直', icon: '│', title: '直线保持垂直', target: 'line' },
@@ -337,35 +366,39 @@ const constraintTools = [
 ];
 const layerColors = ['#c7d7ea', '#74c69d', '#6bb7ff', '#f6c85f', '#f28b82', '#c084fc', '#7dd3fc'];
 
-const tool = ref('select');
+const tool = ref<ToolId>('select');
 const gridSize = 25;
 const snapEnabled = true;
-const entities = reactive([]);
-const constraints = reactive([]);
-const layers = reactive([
+const entities = reactive<Entity[]>([]);
+const constraints = reactive<Constraint[]>([]);
+const layers = reactive<Layer[]>([
   { id: 1, name: '默认', color: '#c7d7ea', visible: true, locked: false },
   { id: 2, name: '尺寸', color: '#74c69d', visible: true, locked: false },
   { id: 3, name: '辅助线', color: '#6bb7ff', visible: true, locked: false },
 ]);
 const currentLayerId = ref(1);
-const panelMode = ref('properties');
-const selectedIds = ref([]);
-const pointer = reactive({ x: 0, y: 0 });
-const draft = ref(null);
-const drag = ref(null);
-const handleDrag = ref(null);
-const lasso = ref(null);
-const activeConstraintTool = ref(null);
-const pendingConstraint = reactive({ entityId: '', refA: '', refB: '' });
-const undoStack = ref([]);
-const redoStack = ref([]);
+const panelMode = ref<PanelMode>('properties');
+const selectedIds = ref<number[]>([]);
+const pointer = reactive<Point>({ x: 0, y: 0 });
+const draft = ref<Draft | null>(null);
+const drag = ref<DragState | null>(null);
+const handleDrag = ref<HandleDragState | null>(null);
+const lasso = ref<LassoState | null>(null);
 
-let gl = null;
-let program = null;
-let positionLocation = null;
-let resolutionLocation = null;
-let colorLocation = null;
-let buffer = null;
+// 当前的约束类型：'horizontal' / 'vertical' / 'fixed' / 'coincident' /  null：没选任何约束工具
+const activeConstraintTool = ref<ConstraintType | null>(null);
+
+// pendingConstraint 是下拉框当前选中的值（v-model 绑的）
+const pendingConstraint = reactive<PendingConstraint>({ entityId: '', refA: '', refB: '' });
+const undoStack = ref<HistorySnapshot[]>([]);
+const redoStack = ref<HistorySnapshot[]>([]);
+
+let gl: WebGLRenderingContext | null = null;
+let program: WebGLProgram | null = null;
+let positionLocation: number | null = null;
+let resolutionLocation: WebGLUniformLocation | null = null;
+let colorLocation: WebGLUniformLocation | null = null;
+let buffer: WebGLBuffer | null = null;
 let nextId = 1;
 let nextLayerId = 4;
 let nextConstraintId = 1;
@@ -373,13 +406,25 @@ let nextConstraintId = 1;
 const selectedId = computed(() => selectedIds.value[0] ?? null);
 const selectedEntity = computed(() => entities.find((item) => item.id === selectedId.value) || null);
 const selectedEntities = computed(() => entities.filter((item) => selectedIds.value.includes(item.id)));
-const visibleEntities = computed(() => entities.filter((entity) => isLayerVisible(entity.layerId)));
-const activeConstraintToolData = computed(() => constraintTools.find((item) => item.id === activeConstraintTool.value) || null);
+
+//属性->对象 下面的列表
+const visibleEntities = computed(() =>
+    entities.filter((entity) => isLayerVisible(entity.layerId))
+);
+
+//大概这样： { id: 'fixed', label: '固定', icon: '⌖', title: '点保持当前位置', target: 'point' }
+const activeConstraintToolData = computed(() =>
+    constraintTools.find((item) => item.id === activeConstraintTool.value) || null
+);
+
+// lineRefOptions 是水平/垂直约束用的「目标直线」下拉选项
 const lineRefOptions = computed(() =>
   visibleEntities.value
     .filter((entity) => entity.type === 'line' && !isLayerLocked(entity.layerId))
     .map((entity) => ({ value: entity.id, label: `${entityName(entity)} #${entity.id}` })),
 );
+
+// 选中约束后约束目标的下拉列表
 const pointRefOptions = computed(() =>
   visibleEntities.value
     .filter((entity) => !isLayerLocked(entity.layerId))
@@ -414,7 +459,7 @@ const statusText = computed(() => {
   return '点击多段线起点，Enter 或双击完成';
 });
 
-function setTool(nextTool) {
+function setTool(nextTool: ToolId) {
   tool.value = nextTool;
   draft.value = null;
   drag.value = null;
@@ -423,7 +468,7 @@ function setTool(nextTool) {
   render();
 }
 
-function selectEntity(id) {
+function selectEntity(id: number) {
   const entity = entities.find((item) => item.id === id);
   if (!entity || !isLayerVisible(entity.layerId) || isLayerLocked(entity.layerId)) return;
   selectedIds.value = [id];
@@ -431,11 +476,11 @@ function selectEntity(id) {
   render();
 }
 
-function isSelected(id) {
+function isSelected(id: number) {
   return selectedIds.value.includes(id);
 }
 
-function entityName(entity) {
+function entityName(entity: Entity) {
   if (entity.type === 'line') return '直线';
   if (entity.type === 'circle') return '圆';
   if (entity.type === 'ellipse') return '椭圆';
@@ -445,47 +490,68 @@ function entityName(entity) {
   return '矩形';
 }
 
-function constraintName(type) {
+function constraintName(type: ConstraintType) {
   const toolData = constraintTools.find((item) => item.id === type);
   return toolData?.label || '约束';
 }
 
-function constraintIcon(type) {
+function constraintIcon(type: ConstraintType) {
   const toolData = constraintTools.find((item) => item.id === type);
   return toolData?.icon || '?';
 }
 
-function selectConstraintTool(type) {
+// 选中某个约束类型：比如水平
+function selectConstraintTool(type: ConstraintType) {
   activeConstraintTool.value = activeConstraintTool.value === type ? null : type;
-  if (activeConstraintTool.value) primePendingConstraint(activeConstraintTool.value);
+  if (activeConstraintTool.value) {
+    primePendingConstraint(activeConstraintTool.value);
+  }
 }
 
 function cancelConstraintTool() {
   activeConstraintTool.value = null;
 }
 
-function primePendingConstraint(type) {
+/*
+  {value: '1:start', label: '直线 #1 / 起点'}
+  {value: '1:end', label: '直线 #1 / 终点'}
+  {value: '2:center', label: '圆 #2 / 中心'}
+*/
+function primePendingConstraint(type: ConstraintType) {
   pendingConstraint.entityId = '';
   pendingConstraint.refA = '';
   pendingConstraint.refB = '';
 
   const selectedLine = selectedEntities.value.find((entity) => entity.type === 'line');
   if (type === 'horizontal' || type === 'vertical') {
-    pendingConstraint.entityId = selectedLine?.id ?? lineRefOptions.value[0]?.value ?? '';
+    const fallback = lineRefOptions.value[0]?.value;
+    pendingConstraint.entityId = selectedLine?.id ?? (typeof fallback === 'number' ? fallback : '');
     return;
   }
-
-  const preferredPoints = selectedEntities.value.flatMap((entity) => constraintPointRefs(entity));
+  const preferredPoints = selectedEntities.value.flatMap(
+        (entity) => constraintPointRefs(entity)
+  );
   const options = preferredPoints.length ? preferredPoints : pointRefOptions.value;
-  pendingConstraint.refA = options[0]?.value ?? '';
-  pendingConstraint.refB = options[1]?.value ?? '';
+
+  // pendingConstraint 是下拉框当前选中的值（v-model 绑的）,这里采用第一个值
+  pendingConstraint.refA = String(options[0]?.value ?? '');
+  pendingConstraint.refB = String(options[1]?.value ?? '');
 }
 
+// 已知实体 + 手柄名，查出这个点当前的画布坐标。
+function getPointByHandle(entity: Entity, handle: string): Point | null {
+  const hit = selectionHandles(entity).find((h) => h.key === handle);
+  return hit ? { x: hit.x, y: hit.y } : null;
+}
+
+//触发：点击“添加按钮”
+// 把面板里选好的目标，落成一条真正的约束。
 function createConstraintFromPending() {
+  // 当前的约束参数数据
   const toolData = activeConstraintToolData.value;
   if (!toolData || !canCreatePendingConstraint.value) return;
 
-  const constraint = {
+  const constraint: Constraint = {
     id: nextConstraintId++,
     type: toolData.id,
     refs: [],
@@ -494,20 +560,31 @@ function createConstraintFromPending() {
   if (toolData.target === 'line') {
     constraint.refs = [{ entityId: Number(pendingConstraint.entityId) }];
   } else if (toolData.target === 'point') {
-    constraint.refs = [decodePointRef(pendingConstraint.refA)];
+    const ref = decodePointRef(pendingConstraint.refA);
+    const entity = entities.find((e) => e.id === ref.entityId);
+    const pt = entity && ref.handle ? getPointByHandle(entity, ref.handle) : null;
+    if (!pt) return;
+    constraint.refs = [{ ...ref, x: pt.x, y: pt.y }];
+
   } else if (toolData.target === 'point-pair') {
     constraint.refs = [decodePointRef(pendingConstraint.refA), decodePointRef(pendingConstraint.refB)];
   }
 
   recordHistory();
-  removeConflictingDirectionalConstraints(constraint);
+  removeRedundantDirectionalConstraints(constraint);
+  // 加入约束列表
   constraints.push(constraint);
-  applyLineOrientationConstraints({ entityId: constraint.refs[0]?.entityId });
+  if(constraint.type=='vertical' || constraint.type=='horizontal') {
+    applyLineOrientationConstraints({entityId: constraint.refs[0]?.entityId});
+  }
+  if(constraint.type=='fixed'){
+    applyFixedConstraint({entityId: constraint.refs[0]?.entityId})
+  }
   activeConstraintTool.value = null;
   render();
 }
 
-function removeConflictingDirectionalConstraints(nextConstraint) {
+function removeRedundantDirectionalConstraints(nextConstraint: Constraint) {
   if (nextConstraint.type !== 'horizontal' && nextConstraint.type !== 'vertical') return;
   const entityId = nextConstraint.refs[0]?.entityId;
   if (!entityId) return;
@@ -519,24 +596,73 @@ function removeConflictingDirectionalConstraints(nextConstraint) {
   }
 }
 
-function applyLineOrientationConstraints(active = {}) {
+// 水平或垂直约束
+function applyLineOrientationConstraints(active: OrientationActive = {}) {
   for (const constraint of constraints) {
-    if (constraint.type !== 'horizontal' && constraint.type !== 'vertical') continue;
+    if (constraint.type !== 'horizontal' && constraint.type !== 'vertical') {
+      continue;
+    }
     const entityId = constraint.refs[0]?.entityId;
-    if (active.entityId && entityId !== active.entityId) continue;
+    if (active.entityId && entityId !== active.entityId) {
+      continue;
+    }
     enforceLineOrientationConstraint(constraint, active);
   }
 }
 
-function enforceLineOrientationConstraint(constraint, active = {}) {
+// 固定约束：fixed (目前只针对直线起作用)
+function applyFixedConstraint(active: OrientationActive = {}){
+  for (const constraint of constraints) {
+    if (constraint.type !== 'fixed') {
+      continue;
+    }
+    const entityId = constraint.refs[0]?.entityId;
+    if (active.entityId && entityId !== active.entityId) {
+      continue;
+    }
+    enforceLineFixedConstraint(constraint, active);
+  }
+}
+
+// 点固定
+function enforceLineFixedConstraint(constraint: Constraint, active: OrientationActive = {}){
+  if(constraint.type!='fixed') return;
+
   const entityId = constraint.refs[0]?.entityId;
+  //拿到当前的entity
+  const entity = entities.find((item) => item.id === entityId);
+  if (!entity || entity.type !== 'line') return;
+  const activeHandle = active.entityId === entity.id ? active.handle : null;
+
+  // constraints.ref[0]里面的x,y是创建这条固定约束时记下的坐标
+  const ref = constraint.refs[0];
+  if (!ref?.handle || ref.x == null || ref.y == null) return;
+
+  if (ref.handle === 'start') {
+    entity.x1 = ref.x;
+    entity.y1 = ref.y;
+  }
+  if (ref.handle === 'end') {
+    entity.x2 = ref.x;
+    entity.y2 = ref.y;
+  }
+
+}
+
+
+//水平或者垂直约束
+function enforceLineOrientationConstraint(constraint: Constraint, active: OrientationActive = {}) {
+  const entityId = constraint.refs[0]?.entityId;
+  //拿到当前的entity
   const entity = entities.find((item) => item.id === entityId);
   if (!entity || entity.type !== 'line') return;
 
+  // 约束类型
   const activeHandle = active.entityId === entity.id ? active.handle : null;
   const dx = entity.x2 - entity.x1;
   const dy = entity.y2 - entity.y1;
   const length = Math.hypot(dx, dy) || gridSize;
+
   if (constraint.type === 'horizontal') {
     if (activeHandle === 'end') entity.y1 = entity.y2;
     else {
@@ -553,7 +679,7 @@ function enforceLineOrientationConstraint(constraint, active = {}) {
   }
 }
 
-function removeConstraint(id) {
+function removeConstraint(id: number) {
   const index = constraints.findIndex((constraint) => constraint.id === id);
   if (index < 0) return;
   recordHistory();
@@ -561,31 +687,34 @@ function removeConstraint(id) {
   render();
 }
 
-function constraintSummary(constraint) {
+function constraintSummary(constraint: Constraint) {
   if (constraint.type === 'horizontal' || constraint.type === 'vertical') {
     return constraintEntityLabel(constraint.refs[0]?.entityId);
   }
-  if (constraint.type === 'fixed') return constraintPointLabel(constraint.refs[0]);
+  if (constraint.type === 'fixed') {
+    return constraintPointLabel(constraint.refs[0]);
+  }
   if (constraint.type === 'coincident') {
     return `${constraintPointLabel(constraint.refs[0])} = ${constraintPointLabel(constraint.refs[1])}`;
   }
   return constraint.refs.map((ref) => constraintPointLabel(ref)).join(', ');
 }
 
-function constraintEntityLabel(entityId) {
+function constraintEntityLabel(entityId?: number) {
   const entity = entities.find((item) => item.id === entityId);
   return entity ? `${entityName(entity)} #${entity.id}` : `对象 #${entityId}`;
 }
 
-function constraintPointLabel(ref) {
+function constraintPointLabel(ref?: ConstraintRef) {
   if (!ref) return '未指定';
   const entity = entities.find((item) => item.id === ref.entityId);
   const name = entity ? `${entityName(entity)} #${entity.id}` : `对象 #${ref.entityId}`;
   return `${name} / ${handleLabel(ref.handle)}`;
 }
 
-function constraintPointRefs(entity) {
-  const handles = [];
+// 给某个图形列出「能拿来做点约束」的选项，供下拉框用
+function constraintPointRefs(entity: Entity): RefOption[] {
+  const handles: string[] = [];
   if (entity.type === 'line') {
     handles.push('start', 'end');
   } else if (entity.type === 'circle' || entity.type === 'ellipse') {
@@ -596,23 +725,26 @@ function constraintPointRefs(entity) {
     handles.push('nw', 'ne', 'se', 'sw');
   }
 
+  /*
+  *   类似 {label: xx, value: "1:start"}
+  * */
   return handles.map((handle) => ({
     value: encodePointRef({ entityId: entity.id, handle }),
     label: `${entityName(entity)} #${entity.id} / ${handleLabel(handle)}`,
   }));
 }
 
-function encodePointRef(ref) {
+function encodePointRef(ref: ConstraintRef) {
   return `${ref.entityId}:${ref.handle}`;
 }
 
-function decodePointRef(value) {
+function decodePointRef(value: string): ConstraintRef {
   const [entityId, handle] = String(value).split(':');
   return { entityId: Number(entityId), handle };
 }
 
-function handleLabel(handle) {
-  const labels = {
+function handleLabel(handle?: string) {
+  const labels: Record<string, string> = {
     start: '起点',
     end: '终点',
     center: '中心',
@@ -621,28 +753,28 @@ function handleLabel(handle) {
     se: '右下',
     sw: '左下',
   };
-  if (labels[handle]) return labels[handle];
+  if (handle && labels[handle]) return labels[handle];
   if (handle?.startsWith('p')) return `点 ${Number(handle.slice(1)) + 1}`;
   return handle || '点';
 }
 
-function lineLength(line) {
+function lineLength(line: LineEntity) {
   return Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
 }
 
-function arcLength(entity) {
+function arcLength(entity: ArcEntity) {
   const geometry = arcGeometry(entity.points[0], entity.points[1], entity.points[2]);
   return geometry ? Math.abs(geometry.sweep) * geometry.r : pathLength(entity.points);
 }
 
-function entityPathLength(entity) {
+function entityPathLength(entity: TriangleEntity | PolylineEntity) {
   if (entity.type === 'triangle') return pathLength(closedPath(entity.points));
   return pathLength(entity.points);
 }
 
-function setLineLength(rawValue) {
+function setLineLength(event: Event) {
   const entity = selectedEntity.value;
-  const value = Number(rawValue);
+  const value = Number((event.target as HTMLInputElement).value);
   if (!entity || entity.type !== 'line' || !Number.isFinite(value) || value <= 0) return;
   recordHistory();
   const length = lineLength(entity) || 1;
@@ -654,36 +786,36 @@ function setLineLength(rawValue) {
   render();
 }
 
-function setCircleRadius(rawValue) {
+function setCircleRadius(event: Event) {
   const entity = selectedEntity.value;
-  const value = Number(rawValue);
+  const value = Number((event.target as HTMLInputElement).value);
   if (!entity || entity.type !== 'circle' || !Number.isFinite(value) || value <= 0) return;
   recordHistory();
   entity.r = value;
   render();
 }
 
-function setEllipseRadius(axis, rawValue) {
+function setEllipseRadius(axis: 'rx' | 'ry', event: Event) {
   const entity = selectedEntity.value;
-  const value = Number(rawValue);
+  const value = Number((event.target as HTMLInputElement).value);
   if (!entity || entity.type !== 'ellipse' || !Number.isFinite(value) || value <= 0) return;
   recordHistory();
   entity[axis] = value;
   render();
 }
 
-function setRectSize(axis, rawValue) {
+function setRectSize(axis: 'w' | 'h', event: Event) {
   const entity = selectedEntity.value;
-  const value = Number(rawValue);
+  const value = Number((event.target as HTMLInputElement).value);
   if (!entity || entity.type !== 'rect' || !Number.isFinite(value) || value <= 0) return;
   recordHistory();
   entity[axis] = Math.sign(entity[axis] || 1) * value;
   render();
 }
 
-function setSelectedLayer(rawValue) {
+function setSelectedLayer(event: Event) {
   const entity = selectedEntity.value;
-  const layerId = Number(rawValue);
+  const layerId = Number((event.target as HTMLSelectElement).value);
   if (!entity || !layers.some((layer) => layer.id === layerId)) return;
   recordHistory();
   entity.layerId = layerId;
@@ -705,23 +837,24 @@ function addLayer() {
   render();
 }
 
-function renameLayer(id, rawName) {
+function renameLayer(id: number, event: Event) {
   const layer = layerById(id);
-  const name = rawName.trim();
+  const name = (event.target as HTMLInputElement).value.trim();
   if (!layer || !name || layer.name === name) return;
   recordHistory();
   layer.name = name;
 }
 
-function setLayerColor(id, color) {
+function setLayerColor(id: number, event: Event) {
   const layer = layerById(id);
+  const color = (event.target as HTMLInputElement).value;
   if (!layer || layer.color === color) return;
   recordHistory();
   layer.color = color;
   render();
 }
 
-function toggleLayerVisible(id) {
+function toggleLayerVisible(id: number) {
   const layer = layerById(id);
   if (!layer) return;
   recordHistory();
@@ -730,7 +863,7 @@ function toggleLayerVisible(id) {
   render();
 }
 
-function toggleLayerLocked(id) {
+function toggleLayerLocked(id: number) {
   const layer = layerById(id);
   if (!layer) return;
   recordHistory();
@@ -739,26 +872,26 @@ function toggleLayerLocked(id) {
   render();
 }
 
-function layerById(id) {
+function layerById(id: number) {
   return layers.find((layer) => layer.id === Number(id));
 }
 
-function entityLayer(entity) {
+function entityLayer(entity: { layerId: number }): Layer {
   return layerById(entity.layerId) || layers[0];
 }
 
-function isLayerVisible(id) {
+function isLayerVisible(id: number) {
   return entityLayer({ layerId: id }).visible;
 }
 
-function isLayerLocked(id) {
+function isLayerLocked(id: number) {
   return entityLayer({ layerId: id }).locked;
 }
 
 function clearInvalidSelection() {
   selectedIds.value = selectedIds.value.filter((id) => {
     const entity = entities.find((item) => item.id === id);
-    return entity && isLayerVisible(entity.layerId) && !isLayerLocked(entity.layerId);
+    return !!entity && isLayerVisible(entity.layerId) && !isLayerLocked(entity.layerId);
   });
 }
 
@@ -791,7 +924,8 @@ function recordHistory() {
 }
 
 function undo() {
-  if (!undoStack.value.length) return;
+  const snapshot = undoStack.value.pop();
+  if (!snapshot) return;
   redoStack.value.push({
     entities: cloneEntities(),
     constraints: cloneConstraints(),
@@ -802,11 +936,12 @@ function undo() {
     nextLayerId,
     nextConstraintId,
   });
-  restoreSnapshot(undoStack.value.pop());
+  restoreSnapshot(snapshot);
 }
 
 function redo() {
-  if (!redoStack.value.length) return;
+  const snapshot = redoStack.value.pop();
+  if (!snapshot) return;
   undoStack.value.push({
     entities: cloneEntities(),
     constraints: cloneConstraints(),
@@ -817,10 +952,10 @@ function redo() {
     nextLayerId,
     nextConstraintId,
   });
-  restoreSnapshot(redoStack.value.pop());
+  restoreSnapshot(snapshot);
 }
 
-function restoreSnapshot(snapshot) {
+function restoreSnapshot(snapshot: HistorySnapshot) {
   entities.splice(0, entities.length, ...snapshot.entities.map((entity) => cloneEntity(entity)));
   constraints.splice(0, constraints.length, ...(snapshot.constraints ?? []).map((constraint) => cloneConstraint(constraint)));
   layers.splice(0, layers.length, ...snapshot.layers.map((layer) => ({ ...layer })));
@@ -850,7 +985,9 @@ function cloneLayers() {
 }
 
 function initWebGL() {
-  gl = glCanvasRef.value.getContext('webgl', { antialias: true });
+  const canvas = glCanvasRef.value;
+  if (!canvas) throw new Error('WebGL canvas is missing');
+  gl = canvas.getContext('webgl', { antialias: true });
   if (!gl) throw new Error('WebGL is not supported');
 
   const vertexShader = compileShader(gl.VERTEX_SHADER, `
@@ -873,11 +1010,12 @@ function initWebGL() {
   `);
 
   program = gl.createProgram();
+  if (!program) throw new Error('Failed to create WebGL program');
   gl.attachShader(program, vertexShader);
   gl.attachShader(program, fragmentShader);
   gl.linkProgram(program);
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new Error(gl.getProgramInfoLog(program));
+    throw new Error(gl.getProgramInfoLog(program) || 'Program link failed');
   }
 
   positionLocation = gl.getAttribLocation(program, 'a_position');
@@ -886,12 +1024,14 @@ function initWebGL() {
   buffer = gl.createBuffer();
 }
 
-function compileShader(type, source) {
+function compileShader(type: number, source: string) {
+  if (!gl) throw new Error('WebGL is not initialized');
   const shader = gl.createShader(type);
+  if (!shader) throw new Error('Failed to create shader');
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    throw new Error(gl.getShaderInfoLog(shader));
+    throw new Error(gl.getShaderInfoLog(shader) || 'Shader compile failed');
   }
   return shader;
 }
@@ -900,6 +1040,7 @@ function resize() {
   const stage = stageRef.value;
   const glCanvas = glCanvasRef.value;
   const labelCanvas = labelCanvasRef.value;
+  if (!stage || !glCanvas || !labelCanvas) return;
   const rect = stage.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
 
@@ -913,8 +1054,10 @@ function resize() {
   render();
 }
 
-function screenPoint(event, options = {}) {
-  const rect = glCanvasRef.value.getBoundingClientRect();
+function screenPoint(event: PointerEvent, options: { snap?: boolean } = {}) {
+  const canvas = glCanvasRef.value;
+  if (!canvas) return { x: 0, y: 0 };
+  const rect = canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
   const shouldSnap = options.snap ?? snapEnabled;
@@ -924,15 +1067,15 @@ function screenPoint(event, options = {}) {
   return point;
 }
 
-function snapPoint(point) {
+function snapPoint(point: Point) {
   return {
     x: Math.round(point.x / gridSize) * gridSize,
     y: Math.round(point.y / gridSize) * gridSize,
   };
 }
 
-function onPointerDown(event) {
-  glCanvasRef.value.setPointerCapture(event.pointerId);
+function onPointerDown(event: PointerEvent) {
+  glCanvasRef.value?.setPointerCapture(event.pointerId);
   const point = screenPoint(event, { snap: tool.value !== 'lasso' });
 
   if (tool.value === 'lasso') {
@@ -945,7 +1088,9 @@ function onPointerDown(event) {
   if (tool.value === 'select') {
     const handleHit = pickHandle(point);
     if (handleHit) {
-      if (!isSelected(handleHit.entity.id)) selectedIds.value = [handleHit.entity.id];
+      if (!isSelected(handleHit.entity.id)) {
+        selectedIds.value = [handleHit.entity.id];
+      }
       handleDrag.value = {
         entityId: handleHit.entity.id,
         handle: handleHit.handle.key,
@@ -976,7 +1121,7 @@ function onPointerDown(event) {
   if (isLayerLocked(currentLayerId.value) || !isLayerVisible(currentLayerId.value)) return;
 
   if (!draft.value) {
-    draft.value = createDraft(tool.value, point);
+    draft.value = createDraft(tool.value as DrawingToolId, point);
     render();
     return;
   }
@@ -986,18 +1131,23 @@ function onPointerDown(event) {
   else render();
 }
 
-function onPointerMove(event) {
+// 鼠标移动 / 移动object
+function onPointerMove(event: PointerEvent) {
+
+  // 鼠标当前移动到的点
   const point = screenPoint(event, { snap: tool.value !== 'lasso' });
 
+  // handleDrag: 当前移动的handle点的信息,包括entityId等
   if (handleDrag.value) {
     if (!handleDrag.value.historyRecorded) {
       recordHistory();
       handleDrag.value.historyRecorded = true;
     }
-    const entity = entities.find((item) => item.id === handleDrag.value.entityId);
+    const entity = entities.find((item) => item.id === handleDrag.value!.entityId);
     if (entity) {
       moveHandleFromOriginal(entity, handleDrag.value.original, handleDrag.value.handle, point);
       applyLineOrientationConstraints({ entityId: entity.id, handle: handleDrag.value.handle });
+      applyFixedConstraint({ entityId: entity.id, handle: handleDrag.value.handle })
     }
     render();
     return;
@@ -1035,9 +1185,10 @@ function onPointerMove(event) {
   renderLabelsOnly();
 }
 
-function onPointerUp(event) {
-  if (glCanvasRef.value.hasPointerCapture(event.pointerId)) {
-    glCanvasRef.value.releasePointerCapture(event.pointerId);
+function onPointerUp(event: PointerEvent) {
+  const canvas = glCanvasRef.value;
+  if (canvas?.hasPointerCapture(event.pointerId)) {
+    canvas.releasePointerCapture(event.pointerId);
   }
 
   if (lasso.value) {
@@ -1055,7 +1206,13 @@ function onPointerLeave() {
 }
 
 function finishLasso() {
-  const points = lasso.value.points;
+  const points = lasso.value?.points;
+  if (!points) {
+    lasso.value = null;
+    tool.value = 'select';
+    render();
+    return;
+  }
   if (points.length >= 3) {
     selectedIds.value = visibleEntities.value
       .filter((entity) => !isLayerLocked(entity.layerId))
@@ -1068,6 +1225,7 @@ function finishLasso() {
 }
 
 function commitDraft() {
+  if (!draft.value) return;
   const entity = entityFromDraft(draft.value);
   if (entity) {
     const drawingTool = draft.value.tool;
@@ -1081,15 +1239,15 @@ function commitDraft() {
   render();
 }
 
-function createDraft(nextTool, point) {
+function createDraft(nextTool: DrawingToolId, point: Point): Draft {
   if (nextTool === 'arc' || nextTool === 'triangle' || nextTool === 'polyline') {
     return { tool: nextTool, points: [point], current: point };
   }
   return { tool: nextTool, start: point, current: point };
 }
 
-function updateDraftPoint(value, point) {
-  if (value.points) {
+function updateDraftPoint(value: Draft, point: Point) {
+  if (value.tool === 'arc' || value.tool === 'triangle' || value.tool === 'polyline') {
     value.points.push(point);
     value.current = point;
     return;
@@ -1097,8 +1255,8 @@ function updateDraftPoint(value, point) {
   value.current = point;
 }
 
-function draftReadyToCommit(value) {
-  if (value.tool === 'arc' || value.tool === 'triangle') return value.points?.length >= 3;
+function draftReadyToCommit(value: Draft) {
+  if (value.tool === 'arc' || value.tool === 'triangle') return value.points.length >= 3;
   if (value.tool === 'polyline') return false;
   return true;
 }
@@ -1119,46 +1277,50 @@ function onDoubleClick() {
   finishPolyline();
 }
 
-function entityFromDraft(value, assignId = true) {
+function entityFromDraft(value: Draft, assignId = true): Entity | null {
   const draftId = () => (assignId ? nextId++ : -1);
+  const layerId = 1;
   if (value.tool === 'arc') {
     const points = draftPoints(value);
     if (points.length < 3 || !arcGeometry(points[0], points[1], points[2])) return null;
-    return { id: draftId(), type: 'arc', points: points.slice(0, 3).map(clonePoint) };
+    return { id: draftId(), layerId, type: 'arc', points: points.slice(0, 3).map(clonePoint) };
   }
   if (value.tool === 'triangle') {
     const points = draftPoints(value);
     if (points.length < 3 || polygonArea(points.slice(0, 3)) === 0) return null;
-    return { id: draftId(), type: 'triangle', points: points.slice(0, 3).map(clonePoint) };
+    return { id: draftId(), layerId, type: 'triangle', points: points.slice(0, 3).map(clonePoint) };
   }
   if (value.tool === 'polyline') {
     const points = draftPoints(value);
     if (points.length < 2 || pathLength(points) <= 0) return null;
-    return { id: draftId(), type: 'polyline', points: points.map(clonePoint) };
+    return { id: draftId(), layerId, type: 'polyline', points: points.map(clonePoint) };
   }
 
+  if (value.tool !== 'line' && value.tool !== 'circle' && value.tool !== 'ellipse' && value.tool !== 'rect') {
+    return null;
+  }
   const { start, current } = value;
   if (value.tool === 'line' && Math.hypot(current.x - start.x, current.y - start.y) > 0) {
-    return { id: draftId(), type: 'line', x1: start.x, y1: start.y, x2: current.x, y2: current.y };
+    return { id: draftId(), layerId, type: 'line', x1: start.x, y1: start.y, x2: current.x, y2: current.y };
   }
   if (value.tool === 'circle') {
     const r = Math.hypot(current.x - start.x, current.y - start.y);
     if (r <= 0) return null;
-    return { id: draftId(), type: 'circle', cx: start.x, cy: start.y, r };
+    return { id: draftId(), layerId, type: 'circle', cx: start.x, cy: start.y, r };
   }
   if (value.tool === 'ellipse') {
     const rx = Math.abs(current.x - start.x);
     const ry = Math.abs(current.y - start.y);
     if (rx <= 0 || ry <= 0) return null;
-    return { id: draftId(), type: 'ellipse', cx: start.x, cy: start.y, rx, ry };
+    return { id: draftId(), layerId, type: 'ellipse', cx: start.x, cy: start.y, rx, ry };
   }
   if (value.tool === 'rect' && Math.abs(current.x - start.x) > 0 && Math.abs(current.y - start.y) > 0) {
-    return { id: draftId(), type: 'rect', x: start.x, y: start.y, w: current.x - start.x, h: current.y - start.y };
+    return { id: draftId(), layerId, type: 'rect', x: start.x, y: start.y, w: current.x - start.x, h: current.y - start.y };
   }
   return null;
 }
 
-function draftPoints(value) {
+function draftPoints(value: Draft) {
   const points = value.points ? value.points.map(clonePoint) : [];
   if (value.current && points.length && !samePoint(points[points.length - 1], value.current)) {
     points.push(clonePoint(value.current));
@@ -1166,44 +1328,46 @@ function draftPoints(value) {
   return points;
 }
 
-function moveEntityFromOriginal(entity, original, dx, dy) {
-  if (entity.type === 'line') {
+function moveEntityFromOriginal(entity: Entity, original: Entity, dx: number, dy: number) {
+  if (entity.type === 'line' && original.type === 'line') {
     entity.x1 = original.x1 + dx;
     entity.y1 = original.y1 + dy;
     entity.x2 = original.x2 + dx;
     entity.y2 = original.y2 + dy;
-  } else if (entity.type === 'circle') {
+  } else if (entity.type === 'circle' && original.type === 'circle') {
     entity.cx = original.cx + dx;
     entity.cy = original.cy + dy;
-  } else if (entity.type === 'ellipse') {
+  } else if (entity.type === 'ellipse' && original.type === 'ellipse') {
     entity.cx = original.cx + dx;
     entity.cy = original.cy + dy;
-  } else if (entity.points) {
+  } else if (
+    (entity.type === 'arc' || entity.type === 'triangle' || entity.type === 'polyline') &&
+    entity.type === original.type
+  ) {
     entity.points = original.points.map((item) => ({ x: item.x + dx, y: item.y + dy }));
-  } else {
+  } else if (entity.type === 'rect' && original.type === 'rect') {
     entity.x = original.x + dx;
     entity.y = original.y + dy;
   }
 }
 
-function cloneEntity(entity) {
-  const base = { id: entity.id, type: entity.type, layerId: entity.layerId ?? 1 };
+function cloneEntity(entity: Entity): Entity {
   if (entity.type === 'line') {
-    return { ...base, x1: entity.x1, y1: entity.y1, x2: entity.x2, y2: entity.y2 };
+    return { id: entity.id, type: 'line', layerId: entity.layerId ?? 1, x1: entity.x1, y1: entity.y1, x2: entity.x2, y2: entity.y2 };
   }
   if (entity.type === 'circle') {
-    return { ...base, cx: entity.cx, cy: entity.cy, r: entity.r };
+    return { id: entity.id, type: 'circle', layerId: entity.layerId ?? 1, cx: entity.cx, cy: entity.cy, r: entity.r };
   }
   if (entity.type === 'ellipse') {
-    return { ...base, cx: entity.cx, cy: entity.cy, rx: entity.rx, ry: entity.ry };
+    return { id: entity.id, type: 'ellipse', layerId: entity.layerId ?? 1, cx: entity.cx, cy: entity.cy, rx: entity.rx, ry: entity.ry };
   }
-  if (entity.points) {
-    return { ...base, points: entity.points.map(clonePoint) };
+  if (entity.type === 'arc' || entity.type === 'triangle' || entity.type === 'polyline') {
+    return { id: entity.id, type: entity.type, layerId: entity.layerId ?? 1, points: entity.points.map(clonePoint) };
   }
-  return { ...base, x: entity.x, y: entity.y, w: entity.w, h: entity.h };
+  return { id: entity.id, type: 'rect', layerId: entity.layerId ?? 1, x: entity.x, y: entity.y, w: entity.w, h: entity.h };
 }
 
-function cloneConstraint(constraint) {
+function cloneConstraint(constraint: Constraint): Constraint {
   return {
     id: constraint.id,
     type: constraint.type,
@@ -1211,19 +1375,21 @@ function cloneConstraint(constraint) {
   };
 }
 
-function constraintTouchesEntities(constraint, entityIds) {
+function constraintTouchesEntities(constraint: Constraint, entityIds: Set<number>) {
   return constraint.refs.some((ref) => entityIds.has(ref.entityId));
 }
 
-function clonePoint(point) {
+function clonePoint(point: Point): Point {
   return { x: point.x, y: point.y };
 }
 
-function samePoint(a, b) {
+function samePoint(a: Point, b: Point) {
   return a.x === b.x && a.y === b.y;
 }
 
-function moveHandleFromOriginal(entity, original, handle, point) {
+
+// point: 当前鼠标的最新位置
+function moveHandleFromOriginal(entity: Entity, original: Entity, handle: string, point: Point) {
   if (entity.type === 'line') {
     if (handle === 'start') {
       entity.x1 = point.x;
@@ -1235,7 +1401,7 @@ function moveHandleFromOriginal(entity, original, handle, point) {
     return;
   }
 
-  if (entity.type === 'circle') {
+  if (entity.type === 'circle' && original.type === 'circle') {
     if (handle === 'center') {
       entity.cx = point.x;
       entity.cy = point.y;
@@ -1245,7 +1411,7 @@ function moveHandleFromOriginal(entity, original, handle, point) {
     return;
   }
 
-  if (entity.type === 'ellipse') {
+  if (entity.type === 'ellipse' && original.type === 'ellipse') {
     if (handle === 'center') {
       entity.cx = point.x;
       entity.cy = point.y;
@@ -1263,6 +1429,8 @@ function moveHandleFromOriginal(entity, original, handle, point) {
     }
     return;
   }
+
+  if (entity.type !== 'rect') return;
 
   const bounds = entityBounds(original);
   let minX = bounds.minX;
@@ -1284,7 +1452,7 @@ function moveHandleFromOriginal(entity, original, handle, point) {
   entity.h = maxY - minY;
 }
 
-function pick(point) {
+function pick(point: Point): Entity | null {
   for (let i = entities.length - 1; i >= 0; i -= 1) {
     const entity = entities[i];
     if (!isLayerVisible(entity.layerId) || isLayerLocked(entity.layerId)) continue;
@@ -1293,7 +1461,8 @@ function pick(point) {
   return null;
 }
 
-function pickHandle(point) {
+// 在当前选中的图形上，判断鼠标点有没有点中某个控制手柄（端点/中心/半径点等）。
+function pickHandle(point: Point): { entity: Entity; handle: Handle } | null {
   const tolerance = 10;
   for (let i = selectedEntities.value.length - 1; i >= 0; i -= 1) {
     const entity = selectedEntities.value[i];
@@ -1308,7 +1477,7 @@ function pickHandle(point) {
   return null;
 }
 
-function hitEntity(entity, point) {
+function hitEntity(entity: Entity, point: Point) {
   const tolerance = 9;
   if (entity.type === 'line') {
     return distanceToSegment(point, { x: entity.x1, y: entity.y1 }, { x: entity.x2, y: entity.y2 }) <= tolerance;
@@ -1320,7 +1489,8 @@ function hitEntity(entity, point) {
     const normalized =
       ((point.x - entity.cx) * (point.x - entity.cx)) / (entity.rx * entity.rx) +
       ((point.y - entity.cy) * (point.y - entity.cy)) / (entity.ry * entity.ry);
-    return normalized <= 1 || distanceToPath(point, ellipseVertices(entity.cx, entity.cy, entity.rx, entity.ry)) <= tolerance;
+    const verts = ellipsePointVertices(entity.cx, entity.cy, entity.rx, entity.ry);
+    return normalized <= 1 || distanceToPath(point, verts) <= tolerance;
   }
   if (entity.type === 'arc') {
     return distanceToPath(point, arcVertices(entity.points[0], entity.points[1], entity.points[2])) <= tolerance;
@@ -1343,7 +1513,7 @@ function hitEntity(entity, point) {
   );
 }
 
-function distanceToSegment(point, a, b) {
+function distanceToSegment(point: Point, a: Point, b: Point) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const lengthSq = dx * dx + dy * dy || 1;
@@ -1351,7 +1521,7 @@ function distanceToSegment(point, a, b) {
   return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
 }
 
-function distanceToPath(point, points) {
+function distanceToPath(point: Point, points: Point[]) {
   if (points.length < 2) return Infinity;
   let min = Infinity;
   for (let i = 1; i < points.length; i += 1) {
@@ -1360,11 +1530,11 @@ function distanceToPath(point, points) {
   return min;
 }
 
-function entityInsideLasso(entity, polygon) {
+function entityInsideLasso(entity: Entity, polygon: Point[]) {
   return entityTestPoints(entity).some((point) => pointInPolygon(point, polygon));
 }
 
-function entityTestPoints(entity) {
+function entityTestPoints(entity: Entity): Point[] {
   if (entity.type === 'line') {
     return [
       { x: entity.x1, y: entity.y1 },
@@ -1410,7 +1580,7 @@ function entityTestPoints(entity) {
   ];
 }
 
-function pointInPolygon(point, polygon) {
+function pointInPolygon(point: Point, polygon: Point[]) {
   let inside = false;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
     const pi = polygon[i];
@@ -1424,8 +1594,9 @@ function pointInPolygon(point, polygon) {
 }
 
 function render() {
-  if (!gl) return;
+  if (!gl || !program || positionLocation === null) return;
   const canvas = glCanvasRef.value;
+  if (!canvas) return;
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
 
@@ -1456,28 +1627,28 @@ function render() {
   renderLabelsOnly();
 }
 
-function drawGrid(width, height) {
-  const fine = [];
+function drawGrid(width: number, height: number) {
+  const fine: number[] = [];
   for (let x = 0; x <= width; x += gridSize) fine.push(x, 0, x, height);
   for (let y = 0; y <= height; y += gridSize) fine.push(0, y, width, y);
   drawLines(fine, [0.18, 0.2, 0.23, 1]);
 
-  const major = [];
+  const major: number[] = [];
   const majorStep = gridSize * 4;
   for (let x = 0; x <= width; x += majorStep) major.push(x, 0, x, height);
   for (let y = 0; y <= height; y += majorStep) major.push(0, y, width, y);
   drawLines(major, [0.27, 0.3, 0.34, 1]);
 }
 
-function drawEntity(entity, selected = false, preview = false) {
+function drawEntity(entity: Entity, selected = false, preview = false) {
   const layer = entityLayer(entity);
   const color = selected ? [1, 0.9, 0.18, 1] : preview ? [0.55, 0.78, 1, 1] : hexToColor(layer.color);
   if (entity.type === 'line') {
     drawLines([entity.x1, entity.y1, entity.x2, entity.y2], color);
   } else if (entity.type === 'circle') {
-    drawLines(circleVertices(entity.cx, entity.cy, entity.r), color, gl.LINE_LOOP);
+    drawLines(circleVertices(entity.cx, entity.cy, entity.r), color, gl!.LINE_LOOP);
   } else if (entity.type === 'ellipse') {
-    drawLines(ellipseVertices(entity.cx, entity.cy, entity.rx, entity.ry), color, gl.LINE_LOOP);
+    drawLines(ellipseVertices(entity.cx, entity.cy, entity.rx, entity.ry), color, gl!.LINE_LOOP);
   } else if (entity.type === 'arc') {
     drawPath(arcVertices(entity.points[0], entity.points[1], entity.points[2]), color);
   } else if (entity.type === 'triangle') {
@@ -1491,7 +1662,7 @@ function drawEntity(entity, selected = false, preview = false) {
   }
 }
 
-function hexToColor(hex) {
+function hexToColor(hex: string): number[] {
   const value = hex.replace('#', '');
   const r = parseInt(value.slice(0, 2), 16) / 255;
   const g = parseInt(value.slice(2, 4), 16) / 255;
@@ -1499,7 +1670,7 @@ function hexToColor(hex) {
   return [r, g, b, 1];
 }
 
-function drawSelection(entity) {
+function drawSelection(entity: Entity) {
   const box = entityBounds(entity);
   const pad = 8;
   const minX = box.minX - pad;
@@ -1519,9 +1690,9 @@ function drawSelection(entity) {
   }
 }
 
-function drawLasso(points) {
+function drawLasso(points: Point[]) {
   if (points.length < 2) return;
-  const vertices = [];
+  const vertices: number[] = [];
   for (let i = 1; i < points.length; i += 1) {
     vertices.push(points[i - 1].x, points[i - 1].y, points[i].x, points[i].y);
   }
@@ -1531,7 +1702,7 @@ function drawLasso(points) {
   drawLines(vertices, [0.36, 0.78, 1, 1]);
 }
 
-function entityBounds(entity) {
+function entityBounds(entity: Entity): Bounds {
   if (entity.type === 'line') {
     return {
       minX: Math.min(entity.x1, entity.x2),
@@ -1570,7 +1741,9 @@ function entityBounds(entity) {
   };
 }
 
-function selectionHandles(entity) {
+// 按图形类型算出选中后该显示、可拖的控制点列表。
+// 每个手柄是 { key, x, y }：key 标识用途，x/y 是画布坐标。
+function selectionHandles(entity: Entity): Handle[] {
   if (entity.type === 'line') {
     return [
       { key: 'start', x: entity.x1, y: entity.y1 },
@@ -1611,7 +1784,7 @@ function selectionHandles(entity) {
   ];
 }
 
-function drawHandle(x, y) {
+function drawHandle(x: number, y: number) {
   const size = 5;
   drawTriangles([
     x - size, y - size,
@@ -1629,8 +1802,8 @@ function drawHandle(x, y) {
   ], [0.12, 0.09, 0.02, 1]);
 }
 
-function circleVertices(cx, cy, r) {
-  const verts = [];
+function circleVertices(cx: number, cy: number, r: number) {
+  const verts: number[] = [];
   const segments = 96;
   for (let i = 0; i < segments; i += 1) {
     const angle = (i / segments) * Math.PI * 2;
@@ -1639,8 +1812,8 @@ function circleVertices(cx, cy, r) {
   return verts;
 }
 
-function ellipseVertices(cx, cy, rx, ry) {
-  const verts = [];
+function ellipseVertices(cx: number, cy: number, rx: number, ry: number) {
+  const verts: number[] = [];
   const segments = 96;
   for (let i = 0; i < segments; i += 1) {
     const angle = (i / segments) * Math.PI * 2;
@@ -1649,10 +1822,23 @@ function ellipseVertices(cx, cy, rx, ry) {
   return verts;
 }
 
-function arcVertices(start, through, end) {
+function ellipsePointVertices(cx: number, cy: number, rx: number, ry: number): Point[] {
+  const verts: Point[] = [];
+  const segments = 96;
+  for (let i = 0; i < segments; i += 1) {
+    const angle = (i / segments) * Math.PI * 2;
+    verts.push({
+      x: cx + Math.cos(angle) * rx,
+      y: cy + Math.sin(angle) * ry,
+    });
+  }
+  return verts;
+}
+
+function arcVertices(start: Point, through: Point, end: Point): Point[] {
   const geometry = arcGeometry(start, through, end);
   if (!geometry) return [start, end].map(clonePoint);
-  const verts = [];
+  const verts: Point[] = [];
   const steps = Math.max(16, Math.ceil(Math.abs(geometry.sweep) / (Math.PI / 36)));
   for (let i = 0; i <= steps; i += 1) {
     const angle = geometry.startAngle + (geometry.sweep * i) / steps;
@@ -1664,7 +1850,7 @@ function arcVertices(start, through, end) {
   return verts;
 }
 
-function arcGeometry(start, through, end) {
+function arcGeometry(start: Point, through: Point, end: Point) {
   const ax = start.x;
   const ay = start.y;
   const bx = through.x;
@@ -1694,17 +1880,17 @@ function arcGeometry(start, through, end) {
   return { cx: ux, cy: uy, r, startAngle, sweep };
 }
 
-function normalizeAngle(angle) {
+function normalizeAngle(angle: number) {
   const full = Math.PI * 2;
   return ((angle % full) + full) % full;
 }
 
-function closedPath(points) {
+function closedPath(points: Point[]) {
   if (!points.length) return [];
   return [...points.map(clonePoint), clonePoint(points[0])];
 }
 
-function pointsBounds(points) {
+function pointsBounds(points: Point[]): Bounds {
   if (!points.length) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
   return {
     minX: Math.min(...points.map((point) => point.x)),
@@ -1714,7 +1900,7 @@ function pointsBounds(points) {
   };
 }
 
-function polygonArea(points) {
+function polygonArea(points: Point[]) {
   if (points.length < 3) return 0;
   let area = 0;
   for (let i = 0; i < points.length; i += 1) {
@@ -1724,7 +1910,7 @@ function polygonArea(points) {
   return Math.abs(area) / 2;
 }
 
-function pathLength(points) {
+function pathLength(points: Point[]) {
   let length = 0;
   for (let i = 1; i < points.length; i += 1) {
     length += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
@@ -1732,22 +1918,25 @@ function pathLength(points) {
   return length;
 }
 
-function drawPath(points, color) {
+function drawPath(points: Point[], color: number[]) {
   if (points.length < 2) return;
-  const vertices = [];
+  const vertices: number[] = [];
   for (let i = 1; i < points.length; i += 1) {
     vertices.push(points[i - 1].x, points[i - 1].y, points[i].x, points[i].y);
   }
   drawLines(vertices, color);
 }
 
-function drawLines(vertices, color, mode = gl.LINES) {
+function drawLines(vertices: number[], color: number[], mode?: number) {
+  if (!gl) return;
+  const drawMode = mode ?? gl.LINES;
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
   gl.uniform4fv(colorLocation, color);
-  gl.drawArrays(mode, 0, vertices.length / 2);
+  gl.drawArrays(drawMode, 0, vertices.length / 2);
 }
 
-function drawTriangles(vertices, color) {
+function drawTriangles(vertices: number[], color: number[]) {
+  if (!gl) return;
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
   gl.uniform4fv(colorLocation, color);
   gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 2);
@@ -1757,6 +1946,7 @@ function renderLabelsOnly() {
   const canvas = labelCanvasRef.value;
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
+  if (!ctx) return;
   const dpr = window.devicePixelRatio || 1;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
@@ -1771,7 +1961,7 @@ function renderLabelsOnly() {
   }
 }
 
-function drawDimension(ctx, entity) {
+function drawDimension(ctx: CanvasRenderingContext2D, entity: Entity) {
   ctx.strokeStyle = '#74c69d';
   ctx.fillStyle = '#b7f4cf';
 
@@ -1821,7 +2011,7 @@ function drawDimension(ctx, entity) {
   drawLabel(ctx, `${Math.abs(entity.h).toFixed(1)} mm`, Math.max(entity.x, x2) + 10, (entity.y + y2) / 2);
 }
 
-function drawLabel(ctx, text, x, y) {
+function drawLabel(ctx: CanvasRenderingContext2D, text: string, x: number, y: number) {
   const metrics = ctx.measureText(text);
   const width = metrics.width + 10;
   ctx.fillStyle = 'rgba(12, 18, 23, 0.86)';
@@ -1830,7 +2020,7 @@ function drawLabel(ctx, text, x, y) {
   ctx.fillText(text, x, y);
 }
 
-function onKeyDown(event) {
+function onKeyDown(event: KeyboardEvent) {
   if (event.target instanceof HTMLInputElement) return;
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
     event.preventDefault();
