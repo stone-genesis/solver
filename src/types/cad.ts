@@ -23,9 +23,9 @@ export type ToolId =
 
 export type DrawingToolId = Exclude<ToolId, 'select' | 'lasso'>;
 
-export type ConstraintType = 'coincident' | 'horizontal' | 'vertical' | 'fixed';
+export type ConstraintType = 'coincident' | 'horizontal' | 'vertical' | 'fixed' | 'parallel' | 'perpendicular';
 
-export type ConstraintTarget = 'line' | 'point' | 'point-pair';
+export type ConstraintTarget = 'line' | 'line-pair' | 'point' | 'point-pair';
 
 export type PanelMode = 'properties' | 'constraints';
 
@@ -179,6 +179,7 @@ export type HistorySnapshot = {
 
 export type PendingConstraint = {
   entityId: number | '';
+  entityIdB: number | '';
   refA: string;
   refB: string;
 };

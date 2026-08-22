@@ -255,6 +255,27 @@
               </div>
             </template>
 
+            <template v-else-if="activeConstraintToolData.target === 'line-pair'">
+              <div class="field">
+                <label>直线 A</label>
+                <select v-model.number="pendingConstraint.entityId">
+                  <option v-for="option in lineRefOptions" :key="`a-${option.value}`" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                  <option v-if="!lineRefOptions.length" value="" disabled>暂无直线</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>直线 B</label>
+                <select v-model.number="pendingConstraint.entityIdB">
+                  <option v-for="option in lineRefOptions" :key="`b-${option.value}`" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                  <option v-if="!lineRefOptions.length" value="" disabled>暂无直线</option>
+                </select>
+              </div>
+            </template>
+
             <template v-else-if="activeConstraintToolData.target === 'point'">
               <div class="field">
                 <label>目标点</label>
@@ -338,8 +359,9 @@ import type {
   ToolDef,
   ConstraintToolDef,
   PanelMode,
-  RefOption,
+  RefOption
 } from './types/cad';
+import { solveConstraints } from './solver';
 
 const stageRef = ref<HTMLElement | null>(null);
 const glCanvasRef = ref<HTMLCanvasElement | null>(null);
@@ -363,6 +385,8 @@ const constraintTools: ConstraintToolDef[] = [
   { id: 'horizontal', label: '水平', icon: '—', title: '直线保持水平', target: 'line' },
   { id: 'vertical', label: '垂直', icon: '│', title: '直线保持垂直', target: 'line' },
   { id: 'fixed', label: '固定', icon: '⌖', title: '点保持当前位置', target: 'point' },
+  { id: 'parallel', label: '平行', icon: '//', title: '两直线保持平行', target: 'line-pair' },
+  { id: 'perpendicular', label: '正交', icon: '⊥', title: '两直线互相垂直', target: 'line-pair' },
 ];
 const layerColors = ['#c7d7ea', '#74c69d', '#6bb7ff', '#f6c85f', '#f28b82', '#c084fc', '#7dd3fc'];
 
@@ -389,7 +413,12 @@ const lasso = ref<LassoState | null>(null);
 const activeConstraintTool = ref<ConstraintType | null>(null);
 
 // pendingConstraint 是下拉框当前选中的值（v-model 绑的）
-const pendingConstraint = reactive<PendingConstraint>({ entityId: '', refA: '', refB: '' });
+const pendingConstraint = reactive<PendingConstraint>({
+  entityId: '',
+  entityIdB: '',
+  refA: '',
+  refB: '',
+});
 const undoStack = ref<HistorySnapshot[]>([]);
 const redoStack = ref<HistorySnapshot[]>([]);
 
@@ -433,7 +462,16 @@ const pointRefOptions = computed(() =>
 const canCreatePendingConstraint = computed(() => {
   const toolData = activeConstraintToolData.value;
   if (!toolData) return false;
-  if (toolData.target === 'line') return lineRefOptions.value.some((option) => option.value === Number(pendingConstraint.entityId));
+  if (toolData.target === 'line') {
+    return lineRefOptions.value.some((option) => option.value === Number(pendingConstraint.entityId));
+  }
+  if (toolData.target === 'line-pair') {
+    const a = Number(pendingConstraint.entityId);
+    const b = Number(pendingConstraint.entityIdB);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return false;
+    const ids = new Set(lineRefOptions.value.map((option) => option.value));
+    return ids.has(a) && ids.has(b);
+  }
   if (toolData.target === 'point') return Boolean(pendingConstraint.refA);
   if (toolData.target === 'point-pair') {
     return Boolean(pendingConstraint.refA && pendingConstraint.refB && pendingConstraint.refA !== pendingConstraint.refB);
@@ -519,13 +557,25 @@ function cancelConstraintTool() {
 */
 function primePendingConstraint(type: ConstraintType) {
   pendingConstraint.entityId = '';
+  pendingConstraint.entityIdB = '';
   pendingConstraint.refA = '';
   pendingConstraint.refB = '';
 
-  const selectedLine = selectedEntities.value.find((entity) => entity.type === 'line');
+  const selectedLines = selectedEntities.value.filter((entity) => entity.type === 'line');
   if (type === 'horizontal' || type === 'vertical') {
     const fallback = lineRefOptions.value[0]?.value;
-    pendingConstraint.entityId = selectedLine?.id ?? (typeof fallback === 'number' ? fallback : '');
+    pendingConstraint.entityId = selectedLines[0]?.id ?? (typeof fallback === 'number' ? fallback : '');
+    return;
+  }
+  if (type === 'parallel' || type === 'perpendicular') {
+    const fallbackA = lineRefOptions.value[0]?.value;
+    const fallbackB = lineRefOptions.value[1]?.value;
+    pendingConstraint.entityId = selectedLines[0]?.id ?? (typeof fallbackA === 'number' ? fallbackA : '');
+    pendingConstraint.entityIdB = selectedLines[1]?.id
+      ?? (typeof fallbackB === 'number' ? fallbackB : '');
+    if (pendingConstraint.entityId === pendingConstraint.entityIdB) {
+      pendingConstraint.entityIdB = typeof fallbackB === 'number' ? fallbackB : '';
+    }
     return;
   }
   const preferredPoints = selectedEntities.value.flatMap(
@@ -559,6 +609,11 @@ function createConstraintFromPending() {
 
   if (toolData.target === 'line') {
     constraint.refs = [{ entityId: Number(pendingConstraint.entityId) }];
+  } else if (toolData.target === 'line-pair') {
+    constraint.refs = [
+      { entityId: Number(pendingConstraint.entityId) },
+      { entityId: Number(pendingConstraint.entityIdB) },
+    ];
   } else if (toolData.target === 'point') {
     const ref = decodePointRef(pendingConstraint.refA);
     const entity = entities.find((e) => e.id === ref.entityId);
@@ -579,6 +634,9 @@ function createConstraintFromPending() {
   }
   if(constraint.type=='fixed'){
     applyFixedConstraint({entityId: constraint.refs[0]?.entityId})
+  }
+  if (constraint.type === 'parallel' || constraint.type === 'perpendicular') {
+    solveConstraints(entities, constraints);
   }
   activeConstraintTool.value = null;
   render();
@@ -690,6 +748,12 @@ function removeConstraint(id: number) {
 function constraintSummary(constraint: Constraint) {
   if (constraint.type === 'horizontal' || constraint.type === 'vertical') {
     return constraintEntityLabel(constraint.refs[0]?.entityId);
+  }
+  if (constraint.type === 'parallel') {
+    return `${constraintEntityLabel(constraint.refs[0]?.entityId)} ∥ ${constraintEntityLabel(constraint.refs[1]?.entityId)}`;
+  }
+  if (constraint.type === 'perpendicular') {
+    return `${constraintEntityLabel(constraint.refs[0]?.entityId)} ⊥ ${constraintEntityLabel(constraint.refs[1]?.entityId)}`;
   }
   if (constraint.type === 'fixed') {
     return constraintPointLabel(constraint.refs[0]);
@@ -1147,7 +1211,15 @@ function onPointerMove(event: PointerEvent) {
     if (entity) {
       moveHandleFromOriginal(entity, handleDrag.value.original, handleDrag.value.handle, point);
       applyLineOrientationConstraints({ entityId: entity.id, handle: handleDrag.value.handle });
-      applyFixedConstraint({ entityId: entity.id, handle: handleDrag.value.handle })
+      applyFixedConstraint({ entityId: entity.id, handle: handleDrag.value.handle });
+      solveConstraints(entities, constraints, {
+        drag: {
+          entityId: entity.id,
+          handle: handleDrag.value.handle,
+          x: point.x,
+          y: point.y,
+        },
+      });
     }
     render();
     return;
