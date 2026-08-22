@@ -23,7 +23,15 @@ export type ToolId =
 
 export type DrawingToolId = Exclude<ToolId, 'select' | 'lasso'>;
 
-export type ConstraintType = 'coincident' | 'horizontal' | 'vertical' | 'fixed' | 'parallel' | 'perpendicular';
+export type ConstraintType =
+  | 'coincident'
+  | 'horizontal'
+  | 'vertical'
+  | 'fixed'
+  | 'parallel'
+  | 'perpendicular'
+  | 'equalLength'
+  | 'angle';
 
 export type ConstraintTarget = 'line' | 'line-pair' | 'point' | 'point-pair';
 
@@ -110,6 +118,7 @@ export type Constraint = {
   id: number;
   type: ConstraintType;
   refs: ConstraintRef[];
+  value?: number;
 };
 
 export type ToolDef = {
@@ -182,6 +191,7 @@ export type PendingConstraint = {
   entityIdB: number | '';
   refA: string;
   refB: string;
+  angle: number | '';
 };
 
 export type RefOption = {

@@ -19,7 +19,7 @@
         <span>{{ statusText }}</span>
         <span>Grid {{ gridSize }} mm</span>
         <span>{{ pointerText }}</span>
-        <span v-if="selectedIds.length">Selected {{ selectedIds.length }}</span>
+        <span v-if="selectionText" class="selection-name">{{ selectionText }}</span>
         <span v-if="activeConstraintTool">约束 {{ constraintName(activeConstraintTool) }}</span>
         <div class="history-actions">
           <button :disabled="!canUndo" title="撤销 Ctrl+Z" @click="undo">Undo</button>
@@ -36,6 +36,7 @@
           @pointerup="onPointerUp"
           @pointerleave="onPointerLeave"
           @dblclick="onDoubleClick"
+          @contextmenu="onContextMenu"
         ></canvas>
         <canvas ref="labelCanvasRef" class="label-canvas"></canvas>
       </div>
@@ -258,7 +259,7 @@
             <template v-else-if="activeConstraintToolData.target === 'line-pair'">
               <div class="field">
                 <label>直线 A</label>
-                <select v-model.number="pendingConstraint.entityId">
+                <select v-model.number="pendingConstraint.entityId" @change="syncPendingAngle">
                   <option v-for="option in lineRefOptions" :key="`a-${option.value}`" :value="option.value">
                     {{ option.label }}
                   </option>
@@ -267,12 +268,20 @@
               </div>
               <div class="field">
                 <label>直线 B</label>
-                <select v-model.number="pendingConstraint.entityIdB">
+                <select v-model.number="pendingConstraint.entityIdB" @change="syncPendingAngle">
                   <option v-for="option in lineRefOptions" :key="`b-${option.value}`" :value="option.value">
                     {{ option.label }}
                   </option>
                   <option v-if="!lineRefOptions.length" value="" disabled>暂无直线</option>
                 </select>
+              </div>
+              <div v-if="activeConstraintTool === 'angle'" class="field">
+                <label>夹角 °</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  v-model.number="pendingConstraint.angle"
+                />
               </div>
             </template>
 
@@ -329,6 +338,18 @@
         </section>
       </div>
     </aside>
+
+    <div
+      v-if="contextMenu"
+      ref="contextMenuRef"
+      class="context-menu"
+      :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+      @contextmenu.prevent
+      @pointerdown.stop
+    >
+      <button type="button" @click="copySelected">复制</button>
+      <button type="button" class="danger-item" @click="deleteFromMenu">删除</button>
+    </div>
   </main>
 </template>
 
@@ -387,18 +408,21 @@ const constraintTools: ConstraintToolDef[] = [
   { id: 'fixed', label: '固定', icon: '⌖', title: '点保持当前位置', target: 'point' },
   { id: 'parallel', label: '平行', icon: '//', title: '两直线保持平行', target: 'line-pair' },
   { id: 'perpendicular', label: '正交', icon: '⊥', title: '两直线互相垂直', target: 'line-pair' },
+  { id: 'equalLength', label: '等长', icon: '=', title: '两直线保持等长', target: 'line-pair' },
+  { id: 'angle', label: '角度', icon: '∠', title: '两直线保持指定夹角', target: 'line-pair' },
 ];
-const layerColors = ['#c7d7ea', '#74c69d', '#6bb7ff', '#f6c85f', '#f28b82', '#c084fc', '#7dd3fc'];
+const layerColors = ['#111111', '#1a7a45', '#1d4ed8', '#b45309', '#b42318', '#6d28d9', '#0f766e'];
 
 const tool = ref<ToolId>('select');
 const gridSize = 25;
+const ENTITY_LINE_WIDTH = 3;
 const snapEnabled = true;
 const entities = reactive<Entity[]>([]);
 const constraints = reactive<Constraint[]>([]);
 const layers = reactive<Layer[]>([
-  { id: 1, name: '默认', color: '#c7d7ea', visible: true, locked: false },
-  { id: 2, name: '尺寸', color: '#74c69d', visible: true, locked: false },
-  { id: 3, name: '辅助线', color: '#6bb7ff', visible: true, locked: false },
+  { id: 1, name: '默认', color: '#111111', visible: true, locked: false },
+  { id: 2, name: '尺寸', color: '#1a7a45', visible: true, locked: false },
+  { id: 3, name: '辅助线', color: '#1d4ed8', visible: true, locked: false },
 ]);
 const currentLayerId = ref(1);
 const panelMode = ref<PanelMode>('properties');
@@ -408,8 +432,10 @@ const draft = ref<Draft | null>(null);
 const drag = ref<DragState | null>(null);
 const handleDrag = ref<HandleDragState | null>(null);
 const lasso = ref<LassoState | null>(null);
+const contextMenu = ref<{ x: number; y: number } | null>(null);
+const contextMenuRef = ref<HTMLElement | null>(null);
 
-// 当前的约束类型：'horizontal' / 'vertical' / 'fixed' / 'coincident' /  null：没选任何约束工具
+// 当前的约束类型；null：没选任何约束工具
 const activeConstraintTool = ref<ConstraintType | null>(null);
 
 // pendingConstraint 是下拉框当前选中的值（v-model 绑的）
@@ -418,6 +444,7 @@ const pendingConstraint = reactive<PendingConstraint>({
   entityIdB: '',
   refA: '',
   refB: '',
+  angle: 45,
 });
 const undoStack = ref<HistorySnapshot[]>([]);
 const redoStack = ref<HistorySnapshot[]>([]);
@@ -470,7 +497,9 @@ const canCreatePendingConstraint = computed(() => {
     const b = Number(pendingConstraint.entityIdB);
     if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return false;
     const ids = new Set(lineRefOptions.value.map((option) => option.value));
-    return ids.has(a) && ids.has(b);
+    if (!ids.has(a) || !ids.has(b)) return false;
+    if (toolData.id === 'angle') return Number.isFinite(Number(pendingConstraint.angle));
+    return true;
   }
   if (toolData.target === 'point') return Boolean(pendingConstraint.refA);
   if (toolData.target === 'point-pair') {
@@ -480,6 +509,15 @@ const canCreatePendingConstraint = computed(() => {
 });
 const canUndo = computed(() => undoStack.value.length > 0);
 const canRedo = computed(() => redoStack.value.length > 0);
+const selectionText = computed(() => {
+  if (!selectedIds.value.length) return '';
+  if (selectedIds.value.length === 1 && selectedEntity.value) {
+    return `${entityName(selectedEntity.value)} #${selectedEntity.value.id}`;
+  }
+  const names = selectedEntities.value.map((entity) => `${entityName(entity)} #${entity.id}`);
+  if (names.length <= 3) return names.join('、');
+  return `${names.slice(0, 2).join('、')} 等 ${names.length} 个`;
+});
 const pointerText = computed(() => `X ${pointer.x.toFixed(0)} / Y ${pointer.y.toFixed(0)}`);
 const statusText = computed(() => {
   if (tool.value === 'select') return '选择对象，可拖动，Delete 删除';
@@ -560,6 +598,7 @@ function primePendingConstraint(type: ConstraintType) {
   pendingConstraint.entityIdB = '';
   pendingConstraint.refA = '';
   pendingConstraint.refB = '';
+  pendingConstraint.angle = 45;
 
   const selectedLines = selectedEntities.value.filter((entity) => entity.type === 'line');
   if (type === 'horizontal' || type === 'vertical') {
@@ -567,7 +606,7 @@ function primePendingConstraint(type: ConstraintType) {
     pendingConstraint.entityId = selectedLines[0]?.id ?? (typeof fallback === 'number' ? fallback : '');
     return;
   }
-  if (type === 'parallel' || type === 'perpendicular') {
+  if (type === 'parallel' || type === 'perpendicular' || type === 'equalLength' || type === 'angle') {
     const fallbackA = lineRefOptions.value[0]?.value;
     const fallbackB = lineRefOptions.value[1]?.value;
     pendingConstraint.entityId = selectedLines[0]?.id ?? (typeof fallbackA === 'number' ? fallbackA : '');
@@ -576,6 +615,7 @@ function primePendingConstraint(type: ConstraintType) {
     if (pendingConstraint.entityId === pendingConstraint.entityIdB) {
       pendingConstraint.entityIdB = typeof fallbackB === 'number' ? fallbackB : '';
     }
+    if (type === 'angle') syncPendingAngle();
     return;
   }
   const preferredPoints = selectedEntities.value.flatMap(
@@ -614,6 +654,7 @@ function createConstraintFromPending() {
       { entityId: Number(pendingConstraint.entityId) },
       { entityId: Number(pendingConstraint.entityIdB) },
     ];
+    if (toolData.id === 'angle') constraint.value = Number(pendingConstraint.angle);
   } else if (toolData.target === 'point') {
     const ref = decodePointRef(pendingConstraint.refA);
     const entity = entities.find((e) => e.id === ref.entityId);
@@ -627,17 +668,14 @@ function createConstraintFromPending() {
 
   recordHistory();
   removeRedundantDirectionalConstraints(constraint);
+  removeRedundantCoincident(constraint);
+  removeRedundantAngle(constraint);
   // 加入约束列表
   constraints.push(constraint);
-  if(constraint.type=='vertical' || constraint.type=='horizontal') {
-    applyLineOrientationConstraints({entityId: constraint.refs[0]?.entityId});
+  if (constraint.type === 'fixed') {
+    applyFixedConstraint({ entityId: constraint.refs[0]?.entityId });
   }
-  if(constraint.type=='fixed'){
-    applyFixedConstraint({entityId: constraint.refs[0]?.entityId})
-  }
-  if (constraint.type === 'parallel' || constraint.type === 'perpendicular') {
-    solveConstraints(entities, constraints);
-  }
+  solveConstraints(entities, constraints);
   activeConstraintTool.value = null;
   render();
 }
@@ -654,17 +692,54 @@ function removeRedundantDirectionalConstraints(nextConstraint: Constraint) {
   }
 }
 
-// 水平或垂直约束
-function applyLineOrientationConstraints(active: OrientationActive = {}) {
-  for (const constraint of constraints) {
-    if (constraint.type !== 'horizontal' && constraint.type !== 'vertical') {
-      continue;
-    }
-    const entityId = constraint.refs[0]?.entityId;
-    if (active.entityId && entityId !== active.entityId) {
-      continue;
-    }
-    enforceLineOrientationConstraint(constraint, active);
+function pointRefKey(ref?: ConstraintRef) {
+  return ref ? `${ref.entityId}:${ref.handle ?? ''}` : '';
+}
+
+function removeRedundantAngle(nextConstraint: Constraint) {
+  if (nextConstraint.type !== 'angle') return;
+  const a = nextConstraint.refs[0]?.entityId;
+  const b = nextConstraint.refs[1]?.entityId;
+  if (!a || !b) return;
+  for (let i = constraints.length - 1; i >= 0; i -= 1) {
+    const constraint = constraints[i];
+    if (constraint.type !== 'angle') continue;
+    const ids = new Set(constraint.refs.map((ref) => ref.entityId));
+    if (ids.has(a) && ids.has(b)) constraints.splice(i, 1);
+  }
+}
+
+function directedLineAngle(a: LineEntity, b: LineEntity) {
+  const dx1 = a.x2 - a.x1;
+  const dy1 = a.y2 - a.y1;
+  const dx2 = b.x2 - b.x1;
+  const dy2 = b.y2 - b.y1;
+  if (Math.hypot(dx1, dy1) < 1e-9 || Math.hypot(dx2, dy2) < 1e-9) return 45;
+  return Math.atan2(dx1 * dy2 - dy1 * dx2, dx1 * dx2 + dy1 * dy2) * 180 / Math.PI;
+}
+
+function syncPendingAngle() {
+  if (activeConstraintTool.value !== 'angle') return;
+  const a = entities.find((entity): entity is LineEntity => entity.id === Number(pendingConstraint.entityId) && entity.type === 'line');
+  const b = entities.find((entity): entity is LineEntity => entity.id === Number(pendingConstraint.entityIdB) && entity.type === 'line');
+  if (!a || !b || a.id === b.id) {
+    pendingConstraint.angle = 45;
+    return;
+  }
+  pendingConstraint.angle = Math.round(directedLineAngle(a, b) * 10) / 10;
+}
+
+function removeRedundantCoincident(nextConstraint: Constraint) {
+  if (nextConstraint.type !== 'coincident') return;
+  const a = pointRefKey(nextConstraint.refs[0]);
+  const b = pointRefKey(nextConstraint.refs[1]);
+  if (!a || !b) return;
+  for (let i = constraints.length - 1; i >= 0; i -= 1) {
+    const constraint = constraints[i];
+    if (constraint.type !== 'coincident') continue;
+    const ca = pointRefKey(constraint.refs[0]);
+    const cb = pointRefKey(constraint.refs[1]);
+    if ((ca === a && cb === b) || (ca === b && cb === a)) constraints.splice(i, 1);
   }
 }
 
@@ -707,36 +782,6 @@ function enforceLineFixedConstraint(constraint: Constraint, active: OrientationA
 
 }
 
-
-//水平或者垂直约束
-function enforceLineOrientationConstraint(constraint: Constraint, active: OrientationActive = {}) {
-  const entityId = constraint.refs[0]?.entityId;
-  //拿到当前的entity
-  const entity = entities.find((item) => item.id === entityId);
-  if (!entity || entity.type !== 'line') return;
-
-  // 约束类型
-  const activeHandle = active.entityId === entity.id ? active.handle : null;
-  const dx = entity.x2 - entity.x1;
-  const dy = entity.y2 - entity.y1;
-  const length = Math.hypot(dx, dy) || gridSize;
-
-  if (constraint.type === 'horizontal') {
-    if (activeHandle === 'end') entity.y1 = entity.y2;
-    else {
-      entity.y2 = entity.y1;
-      if (!activeHandle && Math.abs(dx) < 0.001) entity.x2 = entity.x1 + length;
-    }
-  }
-  if (constraint.type === 'vertical') {
-    if (activeHandle === 'end') entity.x1 = entity.x2;
-    else {
-      entity.x2 = entity.x1;
-      if (!activeHandle && Math.abs(dy) < 0.001) entity.y2 = entity.y1 + length;
-    }
-  }
-}
-
 function removeConstraint(id: number) {
   const index = constraints.findIndex((constraint) => constraint.id === id);
   if (index < 0) return;
@@ -754,6 +799,13 @@ function constraintSummary(constraint: Constraint) {
   }
   if (constraint.type === 'perpendicular') {
     return `${constraintEntityLabel(constraint.refs[0]?.entityId)} ⊥ ${constraintEntityLabel(constraint.refs[1]?.entityId)}`;
+  }
+  if (constraint.type === 'equalLength') {
+    return `${constraintEntityLabel(constraint.refs[0]?.entityId)} 等长 ${constraintEntityLabel(constraint.refs[1]?.entityId)}`;
+  }
+  if (constraint.type === 'angle') {
+    const degrees = Number.isFinite(constraint.value) ? constraint.value : 0;
+    return `${constraintEntityLabel(constraint.refs[0]?.entityId)} ∠ ${constraintEntityLabel(constraint.refs[1]?.entityId)} = ${degrees}°`;
   }
   if (constraint.type === 'fixed') {
     return constraintPointLabel(constraint.refs[0]);
@@ -846,7 +898,7 @@ function setLineLength(event: Event) {
   const dy = (entity.y2 - entity.y1) / length;
   entity.x2 = entity.x1 + dx * value;
   entity.y2 = entity.y1 + dy * value;
-  applyLineOrientationConstraints({ entityId: entity.id });
+  solveConstraints(entities, constraints, { pinEntityIds: [entity.id] });
   render();
 }
 
@@ -1118,7 +1170,7 @@ function resize() {
   render();
 }
 
-function screenPoint(event: PointerEvent, options: { snap?: boolean } = {}) {
+function screenPoint(event: { clientX: number; clientY: number }, options: { snap?: boolean } = {}) {
   const canvas = glCanvasRef.value;
   if (!canvas) return { x: 0, y: 0 };
   const rect = canvas.getBoundingClientRect();
@@ -1138,7 +1190,57 @@ function snapPoint(point: Point) {
   };
 }
 
+function closeContextMenu() {
+  contextMenu.value = null;
+}
+
+function onContextMenu(event: MouseEvent) {
+  event.preventDefault();
+  const point = screenPoint(event, { snap: false });
+  const hit = pickHandle(point)?.entity ?? pick(point);
+  if (!hit) {
+    closeContextMenu();
+    return;
+  }
+  if (!isSelected(hit.id)) selectedIds.value = [hit.id];
+  contextMenu.value = {
+    x: Math.min(event.clientX, window.innerWidth - 148),
+    y: Math.min(event.clientY, window.innerHeight - 84),
+  };
+  render();
+}
+
+function copySelected() {
+  if (!selectedIds.value.length) return;
+  recordHistory();
+  const offset = gridSize;
+  const copies: Entity[] = [];
+  for (const entity of selectedEntities.value) {
+    const copy = cloneEntity(entity);
+    copy.id = nextId++;
+    moveEntityFromOriginal(copy, entity, offset, offset);
+    copies.push(copy);
+  }
+  entities.push(...copies);
+  selectedIds.value = copies.map((entity) => entity.id);
+  closeContextMenu();
+  render();
+}
+
+function deleteFromMenu() {
+  closeContextMenu();
+  deleteSelected();
+}
+
+function onDocumentPointerDown(event: PointerEvent) {
+  const menu = contextMenuRef.value;
+  if (menu && event.target instanceof Node && menu.contains(event.target)) return;
+  closeContextMenu();
+}
+
 function onPointerDown(event: PointerEvent) {
+  closeContextMenu();
+  if (event.button !== 0) return;
   glCanvasRef.value?.setPointerCapture(event.pointerId);
   const point = screenPoint(event, { snap: tool.value !== 'lasso' });
 
@@ -1210,7 +1312,6 @@ function onPointerMove(event: PointerEvent) {
     const entity = entities.find((item) => item.id === handleDrag.value!.entityId);
     if (entity) {
       moveHandleFromOriginal(entity, handleDrag.value.original, handleDrag.value.handle, point);
-      applyLineOrientationConstraints({ entityId: entity.id, handle: handleDrag.value.handle });
       applyFixedConstraint({ entityId: entity.id, handle: handleDrag.value.handle });
       solveConstraints(entities, constraints, {
         drag: {
@@ -1244,6 +1345,9 @@ function onPointerMove(event: PointerEvent) {
       const entity = entities.find((item) => item.id === original.id);
       if (entity) moveEntityFromOriginal(entity, original, dx, dy);
     }
+    solveConstraints(entities, constraints, {
+      pinEntityIds: drag.value.originals.map((item) => item.id),
+    });
     render();
     return;
   }
@@ -1444,6 +1548,7 @@ function cloneConstraint(constraint: Constraint): Constraint {
     id: constraint.id,
     type: constraint.type,
     refs: constraint.refs.map((ref) => ({ ...ref })),
+    value: constraint.value,
   };
 }
 
@@ -1673,7 +1778,7 @@ function render() {
   const height = canvas.clientHeight;
 
   gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.clearColor(0.075, 0.082, 0.094, 1);
+  gl.clearColor(1, 1, 1, 1);
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.useProgram(program);
   gl.uniform2f(resolutionLocation, width, height);
@@ -1703,24 +1808,24 @@ function drawGrid(width: number, height: number) {
   const fine: number[] = [];
   for (let x = 0; x <= width; x += gridSize) fine.push(x, 0, x, height);
   for (let y = 0; y <= height; y += gridSize) fine.push(0, y, width, y);
-  drawLines(fine, [0.18, 0.2, 0.23, 1]);
+  drawLines(fine, [0.88, 0.9, 0.92, 1]);
 
   const major: number[] = [];
   const majorStep = gridSize * 4;
   for (let x = 0; x <= width; x += majorStep) major.push(x, 0, x, height);
   for (let y = 0; y <= height; y += majorStep) major.push(0, y, width, y);
-  drawLines(major, [0.27, 0.3, 0.34, 1]);
+  drawLines(major, [0.76, 0.79, 0.83, 1]);
 }
 
 function drawEntity(entity: Entity, selected = false, preview = false) {
   const layer = entityLayer(entity);
-  const color = selected ? [1, 0.9, 0.18, 1] : preview ? [0.55, 0.78, 1, 1] : hexToColor(layer.color);
+  const color = selected ? [0.78, 0.52, 0.04, 1] : preview ? [0.18, 0.42, 0.82, 1] : hexToColor(layer.color);
   if (entity.type === 'line') {
-    drawLines([entity.x1, entity.y1, entity.x2, entity.y2], color);
+    drawStroke([entity.x1, entity.y1, entity.x2, entity.y2], color, ENTITY_LINE_WIDTH);
   } else if (entity.type === 'circle') {
-    drawLines(circleVertices(entity.cx, entity.cy, entity.r), color, gl!.LINE_LOOP);
+    drawStroke(circleVertices(entity.cx, entity.cy, entity.r), color, ENTITY_LINE_WIDTH, true);
   } else if (entity.type === 'ellipse') {
-    drawLines(ellipseVertices(entity.cx, entity.cy, entity.rx, entity.ry), color, gl!.LINE_LOOP);
+    drawStroke(ellipseVertices(entity.cx, entity.cy, entity.rx, entity.ry), color, ENTITY_LINE_WIDTH, true);
   } else if (entity.type === 'arc') {
     drawPath(arcVertices(entity.points[0], entity.points[1], entity.points[2]), color);
   } else if (entity.type === 'triangle') {
@@ -1730,7 +1835,11 @@ function drawEntity(entity: Entity, selected = false, preview = false) {
   } else {
     const x2 = entity.x + entity.w;
     const y2 = entity.y + entity.h;
-    drawLines([entity.x, entity.y, x2, entity.y, x2, entity.y, x2, y2, x2, y2, entity.x, y2, entity.x, y2, entity.x, entity.y], color);
+    drawStroke(
+      [entity.x, entity.y, x2, entity.y, x2, entity.y, x2, y2, x2, y2, entity.x, y2, entity.x, y2, entity.x, entity.y],
+      color,
+      ENTITY_LINE_WIDTH,
+    );
   }
 }
 
@@ -1755,10 +1864,10 @@ function drawSelection(entity: Entity) {
     maxX, minY, maxX, maxY,
     maxX, maxY, minX, maxY,
     minX, maxY, minX, minY,
-  ], [1, 0.68, 0.12, 1]);
+  ], [0.85, 0.5, 0.05, 1]);
 
   for (const handle of selectionHandles(entity)) {
-    drawHandle(handle.x, handle.y);
+    drawHandle(handle.x, handle.y, handle.key === 'end' ? 'circle' : 'square');
   }
 }
 
@@ -1771,7 +1880,7 @@ function drawLasso(points: Point[]) {
   const first = points[0];
   const last = points[points.length - 1];
   vertices.push(last.x, last.y, first.x, first.y);
-  drawLines(vertices, [0.36, 0.78, 1, 1]);
+  drawStroke(vertices, [0.15, 0.45, 0.85, 1], 2);
 }
 
 function entityBounds(entity: Entity): Bounds {
@@ -1856,8 +1965,28 @@ function selectionHandles(entity: Entity): Handle[] {
   ];
 }
 
-function drawHandle(x: number, y: number) {
+function drawHandle(x: number, y: number, kind: 'square' | 'circle' = 'square') {
   const size = 5;
+  const fill = kind === 'circle' ? [0.18, 0.45, 0.86, 1] : [0.95, 0.75, 0.15, 1];
+  const stroke = [0.2, 0.16, 0.05, 1];
+  if (kind === 'circle') {
+    const tris: number[] = [];
+    const ring: number[] = [];
+    const segments = 16;
+    for (let i = 0; i < segments; i += 1) {
+      const a0 = (i / segments) * Math.PI * 2;
+      const a1 = ((i + 1) / segments) * Math.PI * 2;
+      const x0 = x + Math.cos(a0) * size;
+      const y0 = y + Math.sin(a0) * size;
+      const x1 = x + Math.cos(a1) * size;
+      const y1 = y + Math.sin(a1) * size;
+      tris.push(x, y, x0, y0, x1, y1);
+      ring.push(x0, y0);
+    }
+    drawTriangles(tris, fill);
+    drawLines(ring, stroke, gl!.LINE_LOOP);
+    return;
+  }
   drawTriangles([
     x - size, y - size,
     x + size, y - size,
@@ -1865,13 +1994,13 @@ function drawHandle(x: number, y: number) {
     x - size, y - size,
     x + size, y + size,
     x - size, y + size,
-  ], [1, 0.92, 0.32, 1]);
+  ], fill);
   drawLines([
     x - size, y - size, x + size, y - size,
     x + size, y - size, x + size, y + size,
     x + size, y + size, x - size, y + size,
     x - size, y + size, x - size, y - size,
-  ], [0.12, 0.09, 0.02, 1]);
+  ], stroke);
 }
 
 function circleVertices(cx: number, cy: number, r: number) {
@@ -1996,7 +2125,45 @@ function drawPath(points: Point[], color: number[]) {
   for (let i = 1; i < points.length; i += 1) {
     vertices.push(points[i - 1].x, points[i - 1].y, points[i].x, points[i].y);
   }
-  drawLines(vertices, color);
+  drawStroke(vertices, color, ENTITY_LINE_WIDTH);
+}
+
+function appendThickSegment(out: number[], x1: number, y1: number, x2: number, y2: number, width: number) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) return;
+  const hx = (-dy / len) * (width * 0.5);
+  const hy = (dx / len) * (width * 0.5);
+  out.push(
+    x1 + hx, y1 + hy,
+    x1 - hx, y1 - hy,
+    x2 + hx, y2 + hy,
+    x1 - hx, y1 - hy,
+    x2 - hx, y2 - hy,
+    x2 + hx, y2 + hy,
+  );
+}
+
+function drawStroke(vertices: number[], color: number[], width: number, loop = false) {
+  if (!gl || vertices.length < 4) return;
+  if (width <= 1.01) {
+    drawLines(vertices, color, loop ? gl.LINE_LOOP : undefined);
+    return;
+  }
+  const tris: number[] = [];
+  if (loop) {
+    const count = vertices.length / 2;
+    for (let i = 0; i < count; i += 1) {
+      const j = (i + 1) % count;
+      appendThickSegment(tris, vertices[i * 2], vertices[i * 2 + 1], vertices[j * 2], vertices[j * 2 + 1], width);
+    }
+  } else {
+    for (let i = 0; i + 3 < vertices.length; i += 4) {
+      appendThickSegment(tris, vertices[i], vertices[i + 1], vertices[i + 2], vertices[i + 3], width);
+    }
+  }
+  drawTriangles(tris, color);
 }
 
 function drawLines(vertices: number[], color: number[], mode?: number) {
@@ -2030,12 +2197,39 @@ function renderLabelsOnly() {
   for (const entity of entities) {
     if (!isLayerVisible(entity.layerId)) continue;
     drawDimension(ctx, entity);
+    if (entity.type === 'line' && shouldShowEndpointLabels(entity)) drawEndpointLabels(ctx, entity);
   }
 }
 
+function shouldShowEndpointLabels(entity: Entity) {
+  if (entity.type !== 'line') return false;
+  if (isSelected(entity.id)) return true;
+  return activeConstraintTool.value === 'coincident' || activeConstraintTool.value === 'fixed';
+}
+
+function drawEndpointLabels(ctx: CanvasRenderingContext2D, entity: LineEntity) {
+  drawEndpointName(ctx, '起', entity.x1, entity.y1, entity.x2, entity.y2);
+  drawEndpointName(ctx, '终', entity.x2, entity.y2, entity.x1, entity.y1);
+}
+
+function drawEndpointName(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  otherX: number,
+  otherY: number,
+) {
+  const dx = x - otherX;
+  const dy = y - otherY;
+  const len = Math.hypot(dx, dy) || 1;
+  drawLabel(ctx, text, x + (dx / len) * 16 - 6, y + (dy / len) * 16);
+}
+
 function drawDimension(ctx: CanvasRenderingContext2D, entity: Entity) {
-  ctx.strokeStyle = '#74c69d';
-  ctx.fillStyle = '#b7f4cf';
+  ctx.strokeStyle = '#1a7a45';
+  ctx.fillStyle = '#1a7a45';
+  ctx.lineWidth = 1.5;
 
   if (entity.type === 'line') {
     const mx = (entity.x1 + entity.x2) / 2;
@@ -2086,9 +2280,11 @@ function drawDimension(ctx: CanvasRenderingContext2D, entity: Entity) {
 function drawLabel(ctx: CanvasRenderingContext2D, text: string, x: number, y: number) {
   const metrics = ctx.measureText(text);
   const width = metrics.width + 10;
-  ctx.fillStyle = 'rgba(12, 18, 23, 0.86)';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+  ctx.strokeStyle = '#c5cdd6';
   ctx.fillRect(x - 5, y - 10, width, 20);
-  ctx.fillStyle = '#b7f4cf';
+  ctx.strokeRect(x - 5, y - 10, width, 20);
+  ctx.fillStyle = '#146b3a';
   ctx.fillText(text, x, y);
 }
 
@@ -2113,6 +2309,10 @@ function onKeyDown(event: KeyboardEvent) {
     deleteSelected();
   }
   if (event.key === 'Escape') {
+    if (contextMenu.value) {
+      closeContextMenu();
+      return;
+    }
     draft.value = null;
     drag.value = null;
     handleDrag.value = null;
@@ -2128,6 +2328,7 @@ onMounted(async () => {
   resize();
   window.addEventListener('resize', resize);
   window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('pointerdown', onDocumentPointerDown, true);
 
   entities.push(
     { id: nextId++, type: 'line', layerId: 1, x1: 125, y1: 125, x2: 300, y2: 125 },
@@ -2140,6 +2341,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('resize', resize);
   window.removeEventListener('keydown', onKeyDown);
+  window.removeEventListener('pointerdown', onDocumentPointerDown, true);
 });
 </script>
 
@@ -2150,12 +2352,13 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  background: #e8ebf0;
 }
 
 .toolbar,
 .panel {
-  background: #20242b;
-  border-color: #343b46;
+  background: #ffffff;
+  border-color: #d5dae2;
   border-style: solid;
 }
 
@@ -2171,7 +2374,7 @@ onUnmounted(() => {
   height: 32px;
   font-size: 14px;
   font-weight: 700;
-  color: #f0f4f8;
+  color: #1a1f26;
 }
 
 .toolbar button,
@@ -2181,9 +2384,9 @@ onUnmounted(() => {
 .constraint-actions button,
 .constraint-row button,
 .danger {
-  border: 1px solid #3a4350;
-  background: #272d36;
-  color: #d7dde6;
+  border: 1px solid #d5dae2;
+  background: #f4f6f8;
+  color: #2a313a;
   border-radius: 6px;
   cursor: pointer;
 }
@@ -2216,21 +2419,21 @@ onUnmounted(() => {
   bottom: 6px;
   width: 4px;
   border-radius: 0 4px 4px 0;
-  background: #101820;
+  background: #111111;
 }
 
 .entity-list button.selected {
   border-color: #e7c84c;
-  background: #443f25;
-  color: #fff2a8;
+  background: #fff6d6;
+  color: #8a6d00;
 }
 
 .constraint-total {
   min-width: 24px;
   padding: 2px 8px;
-  border: 1px solid #3a4350;
+  border: 1px solid #d5dae2;
   border-radius: 999px;
-  color: #b9c3cf;
+  color: #5c6673;
   font-size: 12px;
   text-align: center;
 }
@@ -2253,9 +2456,9 @@ onUnmounted(() => {
 }
 
 .constraint-tool.active {
-  border-color: #74c69d;
-  background: #1f3a30;
-  color: #c8f7dc;
+  border-color: #1a7a45;
+  background: #e5f6ec;
+  color: #146b3a;
 }
 
 .constraint-icon {
@@ -2266,9 +2469,9 @@ onUnmounted(() => {
 .constraint-editor {
   margin-bottom: 12px;
   padding: 10px;
-  border: 1px solid #343b46;
+  border: 1px solid #d5dae2;
   border-radius: 6px;
-  background: #1b2027;
+  background: #f7f8fa;
 }
 
 .constraint-actions {
@@ -2283,13 +2486,13 @@ onUnmounted(() => {
 }
 
 .constraint-actions button:disabled {
-  color: #687383;
+  color: #8a93a0;
   cursor: default;
   opacity: 0.65;
 }
 
 .constraint-actions .ghost {
-  background: #20242b;
+  background: #eef1f4;
 }
 
 .constraint-list {
@@ -2304,9 +2507,9 @@ onUnmounted(() => {
   gap: 8px;
   min-height: 44px;
   padding: 7px;
-  border: 1px solid #343b46;
+  border: 1px solid #d5dae2;
   border-radius: 6px;
-  background: #1b2027;
+  background: #f7f8fa;
 }
 
 .constraint-badge {
@@ -2315,8 +2518,8 @@ onUnmounted(() => {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  background: #24362f;
-  color: #9ee5bc;
+  background: #e5f6ec;
+  color: #146b3a;
   font-size: 16px;
 }
 
@@ -2329,12 +2532,12 @@ onUnmounted(() => {
 }
 
 .constraint-row strong {
-  color: #f3f7fb;
+  color: #1a1f26;
   font-size: 13px;
 }
 
 .constraint-row span {
-  color: #99a6b5;
+  color: #5c6673;
   font-size: 12px;
 }
 
@@ -2361,10 +2564,54 @@ onUnmounted(() => {
   align-items: center;
   gap: 24px;
   padding: 0 14px;
-  border-bottom: 1px solid #343b46;
-  background: #1c2026;
-  color: #b9c3cf;
+  border-bottom: 1px solid #d5dae2;
+  background: #f7f8fa;
+  color: #5c6673;
   font-size: 13px;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 20;
+  display: grid;
+  min-width: 128px;
+  padding: 6px;
+  border: 1px solid #d5dae2;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(17, 22, 28, 0.16);
+}
+
+.context-menu button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #1a1f26;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu button:hover {
+  background: #f4f6f8;
+}
+
+.context-menu .danger-item {
+  color: #9b1c2a;
+}
+
+.context-menu .danger-item:hover {
+  background: #fdecee;
+}
+
+.selection-name {
+  padding: 2px 8px;
+  border: 1px solid #e7c84c;
+  border-radius: 999px;
+  background: #fff6d6;
+  color: #8a6d00;
+  font-weight: 700;
 }
 
 .history-actions {
@@ -2375,15 +2622,15 @@ onUnmounted(() => {
 
 .history-actions button {
   min-height: 26px;
-  border: 1px solid #3a4350;
+  border: 1px solid #d5dae2;
   border-radius: 6px;
-  background: #272d36;
-  color: #d7dde6;
+  background: #f4f6f8;
+  color: #2a313a;
   cursor: pointer;
 }
 
 .history-actions button:disabled {
-  color: #687383;
+  color: #8a93a0;
   cursor: default;
   opacity: 0.65;
 }
@@ -2392,6 +2639,7 @@ onUnmounted(() => {
   position: relative;
   min-width: 0;
   min-height: 0;
+  background: #ffffff;
 }
 
 .cad-canvas,
@@ -2423,8 +2671,8 @@ onUnmounted(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   padding: 12px 14px;
-  border-bottom: 1px solid #343b46;
-  background: #1c2026;
+  border-bottom: 1px solid #d5dae2;
+  background: #f7f8fa;
 }
 
 .panel-switch button {
@@ -2446,7 +2694,7 @@ onUnmounted(() => {
   min-width: 22px;
   padding: 1px 7px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(17, 22, 28, 0.08);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -2468,7 +2716,7 @@ h2 {
   margin: 0 0 12px;
   font-size: 14px;
   font-weight: 700;
-  color: #f2f5f8;
+  color: #1a1f26;
 }
 
 .field {
@@ -2479,7 +2727,7 @@ h2 {
 
 label {
   font-size: 12px;
-  color: #aeb8c5;
+  color: #5c6673;
 }
 
 input,
@@ -2487,10 +2735,10 @@ output,
 select {
   width: 100%;
   min-height: 34px;
-  border: 1px solid #3a4350;
+  border: 1px solid #d5dae2;
   border-radius: 6px;
-  background: #161a20;
-  color: #f3f7fb;
+  background: #ffffff;
+  color: #1a1f26;
   padding: 6px 8px;
 }
 
@@ -2502,14 +2750,14 @@ select {
   width: 100%;
   min-height: 36px;
   margin-top: 4px;
-  border-color: #794046;
-  background: #3b2228;
-  color: #ffd4d9;
+  border-color: #e8b4b8;
+  background: #fdecee;
+  color: #9b1c2a;
 }
 
 .empty {
   margin: 0 0 12px;
-  color: #99a6b5;
+  color: #5c6673;
   font-size: 13px;
   line-height: 1.6;
 }
@@ -2544,10 +2792,10 @@ select {
 .section-heading button {
   width: 28px;
   height: 28px;
-  border: 1px solid #3a4350;
+  border: 1px solid #d5dae2;
   border-radius: 6px;
-  background: #272d36;
-  color: #d7dde6;
+  background: #f4f6f8;
+  color: #2a313a;
   cursor: pointer;
 }
 
@@ -2574,16 +2822,16 @@ select {
 .layer-row button,
 .layer-row .swatch {
   min-height: 30px;
-  border: 1px solid #3a4350;
+  border: 1px solid #d5dae2;
   border-radius: 6px;
-  background: #272d36;
-  color: #d7dde6;
+  background: #f4f6f8;
+  color: #2a313a;
   cursor: pointer;
 }
 
 .layer-row button.active {
   border-color: #e7c84c;
-  color: #fff2a8;
+  color: #8a6d00;
 }
 
 .layer-row .swatch {
