@@ -31,6 +31,7 @@
         <canvas
           ref="glCanvasRef"
           class="cad-canvas"
+          :class="{ hovering: hoveredId !== null }"
           @pointerdown="onPointerDown"
           @pointermove="onPointerMove"
           @pointerup="onPointerUp"
@@ -434,6 +435,8 @@ const handleDrag = ref<HandleDragState | null>(null);
 const lasso = ref<LassoState | null>(null);
 const contextMenu = ref<{ x: number; y: number } | null>(null);
 const contextMenuRef = ref<HTMLElement | null>(null);
+const hoveredId = ref<number | null>(null);
+const hoverLabel = reactive<Point>({ x: 0, y: 0 });
 
 // 当前的约束类型；null：没选任何约束工具
 const activeConstraintTool = ref<ConstraintType | null>(null);
@@ -1170,6 +1173,32 @@ function resize() {
   render();
 }
 
+function canvasPoint(event: { clientX: number; clientY: number }): Point {
+  const canvas = glCanvasRef.value;
+  if (!canvas) return { x: 0, y: 0 };
+  const rect = canvas.getBoundingClientRect();
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
+
+function clearHover() {
+  if (hoveredId.value === null) return false;
+  hoveredId.value = null;
+  return true;
+}
+
+function updateHover(point: Point) {
+  const hit = pick(point);
+  const nextId = hit?.id ?? null;
+  hoverLabel.x = point.x + 14;
+  hoverLabel.y = point.y - 18;
+  if (hoveredId.value !== nextId) {
+    hoveredId.value = nextId;
+    render();
+    return;
+  }
+  renderLabelsOnly();
+}
+
 function screenPoint(event: { clientX: number; clientY: number }, options: { snap?: boolean } = {}) {
   const canvas = glCanvasRef.value;
   if (!canvas) return { x: 0, y: 0 };
@@ -1242,9 +1271,9 @@ function onPointerDown(event: PointerEvent) {
   closeContextMenu();
   if (event.button !== 0) return;
   glCanvasRef.value?.setPointerCapture(event.pointerId);
-  const point = screenPoint(event, { snap: tool.value !== 'lasso' });
 
   if (tool.value === 'lasso') {
+    const point = screenPoint(event, { snap: false });
     selectedIds.value = [];
     lasso.value = { points: [point] };
     render();
@@ -1252,6 +1281,7 @@ function onPointerDown(event: PointerEvent) {
   }
 
   if (tool.value === 'select') {
+    const point = screenPoint(event, { snap: false });
     const handleHit = pickHandle(point);
     if (handleHit) {
       if (!isSelected(handleHit.entity.id)) {
@@ -1284,6 +1314,8 @@ function onPointerDown(event: PointerEvent) {
     return;
   }
 
+  const point = screenPoint(event, { snap: snapEnabled });
+
   if (isLayerLocked(currentLayerId.value) || !isLayerVisible(currentLayerId.value)) return;
 
   if (!draft.value) {
@@ -1300,11 +1332,13 @@ function onPointerDown(event: PointerEvent) {
 // 鼠标移动 / 移动object
 function onPointerMove(event: PointerEvent) {
 
-  // 鼠标当前移动到的点
-  const point = screenPoint(event, { snap: tool.value !== 'lasso' });
+  // 移动已有图形不吸附网格；画新图仍按网格。
+  const snapping = snapEnabled && tool.value !== 'lasso' && tool.value !== 'select' && !handleDrag.value && !drag.value;
+  const point = screenPoint(event, { snap: snapping });
 
   // handleDrag: 当前移动的handle点的信息,包括entityId等
   if (handleDrag.value) {
+    clearHover();
     if (!handleDrag.value.historyRecorded) {
       recordHistory();
       handleDrag.value.historyRecorded = true;
@@ -1327,6 +1361,7 @@ function onPointerMove(event: PointerEvent) {
   }
 
   if (lasso.value) {
+    clearHover();
     const points = lasso.value.points;
     const last = points[points.length - 1];
     if (Math.hypot(point.x - last.x, point.y - last.y) >= 3) points.push(point);
@@ -1335,6 +1370,7 @@ function onPointerMove(event: PointerEvent) {
   }
 
   if (drag.value) {
+    clearHover();
     if (!drag.value.historyRecorded) {
       recordHistory();
       drag.value.historyRecorded = true;
@@ -1353,12 +1389,13 @@ function onPointerMove(event: PointerEvent) {
   }
 
   if (draft.value) {
+    clearHover();
     draft.value.current = point;
     render();
     return;
   }
 
-  renderLabelsOnly();
+  updateHover(canvasPoint(event));
 }
 
 function onPointerUp(event: PointerEvent) {
@@ -1379,6 +1416,7 @@ function onPointerUp(event: PointerEvent) {
 function onPointerLeave() {
   handleDrag.value = null;
   drag.value = null;
+  if (clearHover()) render();
 }
 
 function finishLasso() {
@@ -1790,7 +1828,7 @@ function render() {
 
   for (const entity of entities) {
     if (!isLayerVisible(entity.layerId)) continue;
-    drawEntity(entity, isSelected(entity.id));
+    drawEntity(entity, isSelected(entity.id), false, hoveredId.value === entity.id);
     if (isSelected(entity.id)) drawSelection(entity);
   }
 
@@ -1817,9 +1855,15 @@ function drawGrid(width: number, height: number) {
   drawLines(major, [0.76, 0.79, 0.83, 1]);
 }
 
-function drawEntity(entity: Entity, selected = false, preview = false) {
+function drawEntity(entity: Entity, selected = false, preview = false, hovered = false) {
   const layer = entityLayer(entity);
-  const color = selected ? [0.78, 0.52, 0.04, 1] : preview ? [0.18, 0.42, 0.82, 1] : hexToColor(layer.color);
+  const color = selected
+    ? [0.78, 0.52, 0.04, 1]
+    : preview
+      ? [0.18, 0.42, 0.82, 1]
+      : hovered
+        ? [0.15, 0.42, 0.82, 1]
+        : hexToColor(layer.color);
   if (entity.type === 'line') {
     drawStroke([entity.x1, entity.y1, entity.x2, entity.y2], color, ENTITY_LINE_WIDTH);
   } else if (entity.type === 'circle') {
@@ -2199,6 +2243,24 @@ function renderLabelsOnly() {
     drawDimension(ctx, entity);
     if (entity.type === 'line' && shouldShowEndpointLabels(entity)) drawEndpointLabels(ctx, entity);
   }
+  drawHoverName(ctx);
+}
+
+function drawHoverName(ctx: CanvasRenderingContext2D) {
+  if (hoveredId.value === null) return;
+  const entity = entities.find((item) => item.id === hoveredId.value);
+  if (!entity) return;
+  const text = `${entityName(entity)} #${entity.id}`;
+  const metrics = ctx.measureText(text);
+  const width = metrics.width + 12;
+  const x = hoverLabel.x;
+  const y = hoverLabel.y;
+  ctx.fillStyle = '#fff6d6';
+  ctx.strokeStyle = '#e7c84c';
+  ctx.fillRect(x - 6, y - 11, width, 22);
+  ctx.strokeRect(x - 6, y - 11, width, 22);
+  ctx.fillStyle = '#8a6d00';
+  ctx.fillText(text, x, y);
 }
 
 function shouldShowEndpointLabels(entity: Entity) {
@@ -2653,6 +2715,10 @@ onUnmounted(() => {
 
 .cad-canvas {
   cursor: crosshair;
+}
+
+.cad-canvas.hovering {
+  cursor: pointer;
 }
 
 .label-canvas {
