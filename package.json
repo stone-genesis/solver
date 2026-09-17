@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "dev:debug": "node --inspect-brk node_modules/vite/bin/vite.js --host 127.0.0.1",
     "build": "vue-tsc -b && vite build",
     "typecheck": "vue-tsc -b --pretty false",
     "preview": "vite preview --host 127.0.0.1"

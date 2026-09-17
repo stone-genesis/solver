@@ -108,7 +108,7 @@ export type Entity =
 export type EntityType = Entity['type'];
 
 export type ConstraintRef = {
-  entityId: number;
+  entityId: number; //约束对象的id
   handle?: string;
   x?: number; //fixed约束用
   y?: number;

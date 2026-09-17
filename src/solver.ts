@@ -54,9 +54,12 @@ function isSolverConstraint(constraint: Constraint) {
   return SOLVER_CONSTRAINT_TYPES.has(constraint.type);
 }
 
+// 回答residuals这组数值距离0还有多远的距离
 function residualNorm(residuals: number[]) {
   let sum = 0;
-  for (const value of residuals) sum += value * value;
+  for (const value of residuals) {
+    sum += value * value;
+  }
   return Math.sqrt(sum);
 }
 
@@ -82,6 +85,7 @@ function collectSolverConstraints(constraints: Constraint[], seedId?: number): C
   return all.filter((constraint) => constraint.refs.some((ref) => involved.has(ref.entityId)));
 }
 
+// 返回变量的写回函数
 function entityVarDefs(entity: Entity): VarDef[] {
   if (entity.type === 'line') {
     return [
@@ -224,34 +228,38 @@ function lineResiduals(constraint: Constraint, a: LineCoords, b: LineCoords | nu
  * Line constraints: parallel, perpendicular, horizontal, vertical, equal length, angle.
  * Coincident: two handles share the same (x, y).
  */
-export function solveConstraints(
-  entities: Entity[],
-  constraints: Constraint[],
-  options: SolveOptions = {},
-): void {
+export function solveConstraints( entities: Entity[], constraints: Constraint[], options: SolveOptions = {},): void {
   const activeConstraints = collectSolverConstraints(constraints, options.drag?.entityId);
   if (!activeConstraints.length) return;
 
+  // 涉及的id
   const involvedIds = new Set<number>();
   for (const constraint of activeConstraints) {
     for (const ref of constraint.refs) involvedIds.add(ref.entityId);
+    console.log("involvedIds", involvedIds);
   }
+  // involved entities
+  const involvedEntityList = entities.filter((entity) => involvedIds.has(entity.id));
+  // {entityId: entity} map
+  const entityById = new Map(involvedEntityList.map((entity) => [entity.id, entity]));
 
-  const involved = entities.filter((entity) => involvedIds.has(entity.id));
-  const entityById = new Map(involved.map((entity) => [entity.id, entity]));
-
-  const slots: VarSlot[] = [];
-  const indexOf = new Map<string, number>();
-  for (const entity of involved) {
+  // slots形如:
+  // {entityId: 4, key: 'x1', read: ƒ, write: ƒ}
+  // {entityId: 1, key: 'y1', read: ƒ, write: ƒ}
+  const slots: VarSlot[] = []; //给每个对象的每个变量 (比如x1,y1提供一个VarSlot)
+  const indexOf = new Map<string, number>(); // 形如: ["4:y1", 5]
+  for (const entity of involvedEntityList) {
     for (const def of entityVarDefs(entity)) {
-      indexOf.set(`${entity.id}:${def.key}`, slots.length);
+      indexOf.set(`${entity.id}:${def.key}`, slots.length);//slots.length是不断增加的
       slots.push({ entityId: entity.id, ...def });
     }
   }
+
   if (!slots.length) return;
 
+  // 调用slots里面每个slot的read方法读取原本的数值
   const xPrev = slots.map((slot) => slot.read());
-  const x = xPrev.slice();
+  const x = xPrev.slice();//浅拷贝整个数组
 
   const stayWeight = options.stayWeight ?? 1;
   const dragWeight = options.dragWeight ?? 100;
@@ -261,7 +269,9 @@ export function solveConstraints(
   const constraintWeight = options.constraintWeight ?? 1e4;
   const maxIterations = options.maxIterations ?? 25;
   const tolerance = options.tolerance ?? 1e-5;
+  const constraintScale = Math.sqrt(constraintWeight);
 
+  // skipStay 是一个"豁免名单"，记录哪些变量不需要加"stay(保持原位)残差"
   const skipStay = new Set<number>();
   if (options.drag) {
     const entity = entityById.get(options.drag.entityId);
@@ -279,13 +289,59 @@ export function solveConstraints(
     }
   }
 
+  // 求解过程
+  for (let iter = 0; iter < maxIterations; iter += 1) {
+    const { residuals, jacobian, constraintCount } = jacobianNumeric(x);
+    if (residualNorm(residuals.slice(0, constraintCount)) < tolerance) {
+      break;
+    }
+
+    const n = x.length;
+    // JᵀJ：Jacobian（雅可比矩阵）的转置乘自身
+    // Jᵀr：Jacobian 的转置乘残差向量
+    const jtj = Array.from({ length: n }, () => new Array<number>(n).fill(0));
+    const jtr = new Array<number>(n).fill(0);
+
+    // Jᵀr 做的是同一件事：对每个变量，把“该变量对每条残差的影响 × 那条残差当前有多大”全部加起来。
+    for (let i = 0; i < residuals.length; i += 1) {
+      for (let j = 0; j < n; j += 1) {
+        jtr[j] += jacobian[i][j] * residuals[i]; //jacobian矩阵的行元素 * residuals向量的对应元素
+        for (let k = 0; k < n; k += 1) {
+          jtj[j][k] += jacobian[i][j] * jacobian[i][k];//计算的是 JᵀJ
+        }
+      }
+    }
+
+    // JᵀJ + λI
+    const damping = 1e-6;
+    for (let j = 0; j < n; j += 1) {
+      jtj[j][j] += damping;
+    }
+
+    const delta = solveLinearSystem(
+      jtj,
+      jtr.map((value) => -value),
+    );
+    if (!delta) break;
+    if (residualNorm(delta) < tolerance) break;
+
+    // delta 就是本轮应给各个图形参数加上的修正量
+    for (let j = 0; j < n; j += 1)
+        x[j] += delta[j];
+  }
+
+  // 写回
+  for (let i = 0; i < slots.length; i += 1) slots[i].write(x[i]);
+
+
+  // 下面是内部定义的一些函数
   function valueOf(vec: number[], entityId: number, key: string): number | null {
     const idx = indexOf.get(`${entityId}:${key}`);
     return idx === undefined ? null : vec[idx];
   }
 
   function coordsOf(vec: number[], entityId: number): LineCoords | null {
-    const x1 = valueOf(vec, entityId, 'x1');
+    const x1 = valueOf(vec, entityId, 'x1'); // (vec, id, key)
     const y1 = valueOf(vec, entityId, 'y1');
     const x2 = valueOf(vec, entityId, 'x2');
     const y2 = valueOf(vec, entityId, 'y2');
@@ -338,8 +394,11 @@ export function solveConstraints(
     return px === null || py === null ? null : { x: px, y: py };
   }
 
-  const constraintScale = Math.sqrt(constraintWeight);
-
+  /*
+    水平：100 * (y2 - y1) —— y 不等，就有一个数
+    重合：100*(ax-bx), 100*(ay-by) —— 两点拆成两个数
+    平行 / 垂直 / 等长 / 夹角：各 1 个数
+   */
   function constraintResiduals(constraint: Constraint, vec: number[]): number[] {
     if (constraint.type === 'coincident') {
       const a = pointOf(vec, constraint.refs[0]?.entityId, constraint.refs[0]?.handle);
@@ -354,6 +413,10 @@ export function solveConstraints(
     return lineResiduals(constraint, a, b, constraintScale);
   }
 
+  // ① 几何约束
+  // ② stay
+  // ③ drag
+  // ④ pin
   function computeResiduals(vec: number[]): { residuals: number[]; constraintCount: number } {
     const residuals: number[] = [];
 
@@ -362,12 +425,16 @@ export function solveConstraints(
     }
     const constraintCount = residuals.length;
 
+    //  stay(没被拖、没被钉的变量，尽量别动)
+    // 残差 = 1 * (vec[i] - xPrev[i])
     const stayScale = Math.sqrt(stayWeight);
     for (let i = 0; i < vec.length; i += 1) {
       if (skipStay.has(i)) continue;
       residuals.push(stayScale * (vec[i] - xPrev[i]));
     }
 
+    // drag(手柄去追鼠标)
+    // 残差 = [10*(手柄x - 鼠标x), 10*(手柄y - 鼠标y)]
     if (options.drag) {
       const p = pointOf(vec, options.drag.entityId, options.drag.handle);
       if (p) {
@@ -376,11 +443,15 @@ export function solveConstraints(
       }
     }
 
+    // pin（某些图形钉死）
+    // 残差 = 10 * (现在的值 - 旧值)
     if (options.pinEntityIds?.length) {
       const pinScale = Math.sqrt(pinWeight);
       for (const entityId of options.pinEntityIds) {
         for (const slot of slots) {
-          if (slot.entityId !== entityId) continue;
+          if (slot.entityId !== entityId) {
+            continue;
+          }
           const idx = indexOf.get(`${entityId}:${slot.key}`);
           if (idx === undefined) continue;
           residuals.push(pinScale * (vec[idx] - xPrev[idx]));
@@ -391,23 +462,43 @@ export function solveConstraints(
     return { residuals, constraintCount };
   }
 
-  function jacobianNumeric(vec: number[]): {
-    residuals: number[];
-    jacobian: number[][];
-    constraintCount: number;
-  } {
+  /*
+    变量 x[j] 加一个很小的 eps
+      → 重新得到 perturbed residuals
+      → 对每一行 i：
+        J[i][j] = (perturbed[i] - residuals[i]) / eps
+    vec: 当前这一轮迭代中，求解器暂时假设的“所有参与图形的坐标”
+         例如：
+          vec = [
+            A.x1, A.y1, A.x2, A.y2,
+            B.x1, B.y1, B.x2, B.y2
+          ]
+   */
+  function jacobianNumeric(vec: number[]): { residuals: number[]; jacobian: number[][]; constraintCount: number; } {
     const eps = 1e-6;
+    //  residuals[i]: 第 i 条误差方程当前的值
     const { residuals, constraintCount } = computeResiduals(vec);
     const m = residuals.length;
     const n = vec.length;
+
+    // 创建一个m * n维度的jacobian矩阵
     const jacobian = Array.from({ length: m }, () => new Array<number>(n).fill(0));
 
+    /*
+        对每个变量 j：vec[j] += eps，再算一遍残差
+        J[i][j] = (新残差[i] - 旧残差[i]) / eps
+
+        J[i][j] = (r(x + εej) - r(x)) / ε 把某个坐标临时加 1e-6，重新算一遍残差，看变化量
+        J[i][j]          = x[j] 微调时，residuals[i] 的变化速度
+     */
     for (let j = 0; j < n; j += 1) {
       const saved = vec[j];
-      vec[j] = saved + eps;
+      vec[j] = saved + eps; //添加微小扰动
       const perturbed = computeResiduals(vec).residuals;
-      vec[j] = saved;
-      for (let i = 0; i < m; i += 1) {
+      vec[j] = saved; //恢复vec[j]的值
+
+      // 它更新的是 Jacobian 矩阵的第 j 列
+      for (let i = 0; i < residuals.length; i += 1) {
         jacobian[i][j] = (perturbed[i] - residuals[i]) / eps;
       }
     }
@@ -415,35 +506,4 @@ export function solveConstraints(
     return { residuals, jacobian, constraintCount };
   }
 
-  for (let iter = 0; iter < maxIterations; iter += 1) {
-    const { residuals, jacobian, constraintCount } = jacobianNumeric(x);
-    if (residualNorm(residuals.slice(0, constraintCount)) < tolerance) break;
-
-    const n = x.length;
-    const jtj = Array.from({ length: n }, () => new Array<number>(n).fill(0));
-    const jtr = new Array<number>(n).fill(0);
-
-    for (let i = 0; i < residuals.length; i += 1) {
-      for (let j = 0; j < n; j += 1) {
-        jtr[j] += jacobian[i][j] * residuals[i];
-        for (let k = 0; k < n; k += 1) {
-          jtj[j][k] += jacobian[i][j] * jacobian[i][k];
-        }
-      }
-    }
-
-    const damping = 1e-6;
-    for (let j = 0; j < n; j += 1) jtj[j][j] += damping;
-
-    const delta = solveLinearSystem(
-      jtj,
-      jtr.map((value) => -value),
-    );
-    if (!delta) break;
-    if (residualNorm(delta) < tolerance) break;
-
-    for (let j = 0; j < n; j += 1) x[j] += delta[j];
-  }
-
-  for (let i = 0; i < slots.length; i += 1) slots[i].write(x[i]);
 }

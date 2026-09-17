@@ -2,6 +2,10 @@
   <main class="cad-shell">
     <aside class="toolbar">
       <div class="brand">Mini CAD</div>
+
+<!--
+  左侧工具栏：直线，圆等
+-->
       <button
         v-for="item in tools"
         :key="item.id"
@@ -14,6 +18,9 @@
       </button>
     </aside>
 
+<!--
+  顶部工具栏
+-->
     <section class="viewport-wrap">
       <div class="topbar">
         <span>{{ statusText }}</span>
@@ -27,6 +34,9 @@
         </div>
       </div>
 
+<!--
+  画布和相关事件
+-->
       <div ref="stageRef" class="stage">
         <canvas
           ref="glCanvasRef"
@@ -43,6 +53,7 @@
       </div>
     </section>
 
+    <!--     右侧面板：属性和约束     -->
     <aside class="panel">
       <div class="panel-switch" role="tablist" aria-label="右侧面板">
         <button
@@ -64,6 +75,7 @@
         </button>
       </div>
 
+<!--         属性   -->
       <div v-if="panelMode === 'properties'" class="panel-page">
         <section>
           <h2>属性</h2>
@@ -223,6 +235,7 @@
         </section>
       </div>
 
+<!--         约束   -->
       <div v-else class="panel-page">
         <section>
           <div class="section-heading">
@@ -276,6 +289,7 @@
                   <option v-if="!lineRefOptions.length" value="" disabled>暂无直线</option>
                 </select>
               </div>
+
               <div v-if="activeConstraintTool === 'angle'" class="field">
                 <label>夹角 °</label>
                 <input
@@ -319,8 +333,10 @@
               </div>
             </template>
 
+<!--         添加约束   -->
             <div class="constraint-actions">
-              <button :disabled="!canCreatePendingConstraint" @click="createConstraintFromPending">添加</button>
+              <button :disabled="!canCreatePendingConstraint"
+                      @click="createConstraintFromPending">添加</button>
               <button class="ghost" @click="cancelConstraintTool">取消</button>
             </div>
           </div>
@@ -340,6 +356,9 @@
       </div>
     </aside>
 
+<!--
+  context menu
+-->
     <div
       v-if="contextMenu"
       ref="contextMenuRef"
@@ -418,6 +437,7 @@ const tool = ref<ToolId>('select');
 const gridSize = 25;
 const ENTITY_LINE_WIDTH = 3;
 const snapEnabled = true;
+// 图形的唯一正式存放处
 const entities = reactive<Entity[]>([]);
 const constraints = reactive<Constraint[]>([]);
 const layers = reactive<Layer[]>([
@@ -427,18 +447,23 @@ const layers = reactive<Layer[]>([
 ]);
 const currentLayerId = ref(1);
 const panelMode = ref<PanelMode>('properties');
+// 选中图形的id列表
 const selectedIds = ref<number[]>([]);
 const pointer = reactive<Point>({ x: 0, y: 0 });
 const draft = ref<Draft | null>(null);
 const drag = ref<DragState | null>(null);
 const handleDrag = ref<HandleDragState | null>(null);
+// 套索
 const lasso = ref<LassoState | null>(null);
 const contextMenu = ref<{ x: number; y: number } | null>(null);
 const contextMenuRef = ref<HTMLElement | null>(null);
+
+// 鼠标移动时候 pick(Point)拾取entity,然后将Id和hoverLabel信息填充
 const hoveredId = ref<number | null>(null);
 const hoverLabel = reactive<Point>({ x: 0, y: 0 });
 
 // 当前的约束类型；null：没选任何约束工具
+// ConstraintType: string类型
 const activeConstraintTool = ref<ConstraintType | null>(null);
 
 // pendingConstraint 是下拉框当前选中的值（v-model 绑的）
@@ -464,7 +489,9 @@ let nextConstraintId = 1;
 
 const selectedId = computed(() => selectedIds.value[0] ?? null);
 const selectedEntity = computed(() => entities.find((item) => item.id === selectedId.value) || null);
-const selectedEntities = computed(() => entities.filter((item) => selectedIds.value.includes(item.id)));
+const selectedEntities = computed(() =>
+      entities.filter((item) => selectedIds.value.includes(item.id))
+);
 
 //属性->对象 下面的列表
 const visibleEntities = computed(() =>
@@ -477,6 +504,7 @@ const activeConstraintToolData = computed(() =>
 );
 
 // lineRefOptions 是水平/垂直约束用的「目标直线」下拉选项
+// lineRefOptions 是所有可见、未锁定图层上的直线列表
 const lineRefOptions = computed(() =>
   visibleEntities.value
     .filter((entity) => entity.type === 'line' && !isLayerLocked(entity.layerId))
@@ -596,16 +624,23 @@ function cancelConstraintTool() {
   {value: '1:end', label: '直线 #1 / 终点'}
   {value: '2:center', label: '圆 #2 / 中心'}
 */
+/*
+primePendingConstraint 在你点选约束工具（水平/垂直）时，给侧边栏下拉框预填目标。选目标的优先级是：
+  优先用当前选中的直线 selectedLines[0]?.id
+  没有选中直线时，才用 fallback
+  连直线都没有（画布上空），就填 ''
+ */
 function primePendingConstraint(type: ConstraintType) {
   pendingConstraint.entityId = '';
   pendingConstraint.entityIdB = '';
   pendingConstraint.refA = '';
   pendingConstraint.refB = '';
   pendingConstraint.angle = 45;
-
+  console.log("constraint type: ",type)
   const selectedLines = selectedEntities.value.filter((entity) => entity.type === 'line');
   if (type === 'horizontal' || type === 'vertical') {
     const fallback = lineRefOptions.value[0]?.value;
+    console.log("fallback: ",fallback)
     pendingConstraint.entityId = selectedLines[0]?.id ?? (typeof fallback === 'number' ? fallback : '');
     return;
   }
@@ -641,7 +676,7 @@ function getPointByHandle(entity: Entity, handle: string): Point | null {
 // 把面板里选好的目标，落成一条真正的约束。
 function createConstraintFromPending() {
   // 当前的约束参数数据
-  const toolData = activeConstraintToolData.value;
+  const toolData:ConstraintToolDef | null = activeConstraintToolData.value;
   if (!toolData || !canCreatePendingConstraint.value) return;
 
   const constraint: Constraint = {
@@ -652,10 +687,14 @@ function createConstraintFromPending() {
 
   if (toolData.target === 'line') {
     constraint.refs = [{ entityId: Number(pendingConstraint.entityId) }];
-  } else if (toolData.target === 'line-pair') {
+  }
+  // 平行约束
+  else if (toolData.target === 'line-pair') {
+    console.log(pendingConstraint.entityId);
+    console.log(pendingConstraint.entityIdB);
     constraint.refs = [
-      { entityId: Number(pendingConstraint.entityId) },
-      { entityId: Number(pendingConstraint.entityIdB) },
+      { entityId: Number(pendingConstraint.entityId) }, //第一条直线
+      { entityId: Number(pendingConstraint.entityIdB) }, //第二条直线
     ];
     if (toolData.id === 'angle') constraint.value = Number(pendingConstraint.angle);
   } else if (toolData.target === 'point') {
@@ -1223,6 +1262,7 @@ function closeContextMenu() {
   contextMenu.value = null;
 }
 
+// 右键菜单
 function onContextMenu(event: MouseEvent) {
   event.preventDefault();
   const point = screenPoint(event, { snap: false });
@@ -1275,7 +1315,7 @@ function onPointerDown(event: PointerEvent) {
   if (tool.value === 'lasso') {
     const point = screenPoint(event, { snap: false });
     selectedIds.value = [];
-    lasso.value = { points: [point] };
+    lasso.value = { points: [point] };//套索
     render();
     return;
   }
@@ -1318,6 +1358,7 @@ function onPointerDown(event: PointerEvent) {
 
   if (isLayerLocked(currentLayerId.value) || !isLayerVisible(currentLayerId.value)) return;
 
+  // 拖着鼠标移动时不会调 updateDraftPoint，只改预
   if (!draft.value) {
     draft.value = createDraft(tool.value as DrawingToolId, point);
     render();
@@ -1325,7 +1366,9 @@ function onPointerDown(event: PointerEvent) {
   }
 
   updateDraftPoint(draft.value, point);
-  if (draftReadyToCommit(draft.value)) commitDraft();
+  // 按照类型判断(arc,line等)点是否enough
+  if (draftReadyToCommit(draft.value))
+      commitDraft();
   else render();
 }
 
@@ -1347,6 +1390,7 @@ function onPointerMove(event: PointerEvent) {
     if (entity) {
       moveHandleFromOriginal(entity, handleDrag.value.original, handleDrag.value.handle, point);
       applyFixedConstraint({ entityId: entity.id, handle: handleDrag.value.handle });
+      // 移动过程中求解约束
       solveConstraints(entities, constraints, {
         drag: {
           entityId: entity.id,
@@ -1416,7 +1460,8 @@ function onPointerUp(event: PointerEvent) {
 function onPointerLeave() {
   handleDrag.value = null;
   drag.value = null;
-  if (clearHover()) render();
+  if (clearHover())
+    render();
 }
 
 function finishLasso() {
@@ -1453,6 +1498,10 @@ function commitDraft() {
   render();
 }
 
+/*
+  两点图形：按下是起点，鼠标移动改 current
+  多点图形：第一次点击放进 points，后面继续加点
+ */
 function createDraft(nextTool: DrawingToolId, point: Point): Draft {
   if (nextTool === 'arc' || nextTool === 'triangle' || nextTool === 'polyline') {
     return { tool: nextTool, points: [point], current: point };
@@ -1460,12 +1509,14 @@ function createDraft(nextTool: DrawingToolId, point: Point): Draft {
   return { tool: nextTool, start: point, current: point };
 }
 
+// 已经有草稿时，再点一下才会进这里
 function updateDraftPoint(value: Draft, point: Point) {
   if (value.tool === 'arc' || value.tool === 'triangle' || value.tool === 'polyline') {
     value.points.push(point);
     value.current = point;
     return;
   }
+  // line类型
   value.current = point;
 }
 
@@ -1666,12 +1717,14 @@ function moveHandleFromOriginal(entity: Entity, original: Entity, handle: string
   entity.w = maxX - minX;
   entity.h = maxY - minY;
 }
-
+// 传入点击位置，输出: Entity
 function pick(point: Point): Entity | null {
   for (let i = entities.length - 1; i >= 0; i -= 1) {
     const entity = entities[i];
     if (!isLayerVisible(entity.layerId) || isLayerLocked(entity.layerId)) continue;
-    if (hitEntity(entity, point)) return entity;
+    if (hitEntity(entity, point)) {
+      return entity;
+    }
   }
   return null;
 }
@@ -1749,6 +1802,7 @@ function entityInsideLasso(entity: Entity, polygon: Point[]) {
   return entityTestPoints(entity).some((point) => pointInPolygon(point, polygon));
 }
 
+// 对于一个entity, 提取一些点来判断释放在lasso内部
 function entityTestPoints(entity: Entity): Point[] {
   if (entity.type === 'line') {
     return [
@@ -1829,15 +1883,18 @@ function render() {
   for (const entity of entities) {
     if (!isLayerVisible(entity.layerId)) continue;
     drawEntity(entity, isSelected(entity.id), false, hoveredId.value === entity.id);
-    if (isSelected(entity.id)) drawSelection(entity);
+    if (isSelected(entity.id))
+      drawSelection(entity);
   }
 
   if (draft.value) {
     const preview = entityFromDraft({ ...draft.value, current: draft.value.current }, false);
-    if (preview) drawEntity(preview, true, true);
+    if (preview)
+      drawEntity(preview, true, true);
   }
 
-  if (lasso.value) drawLasso(lasso.value.points);
+  if (lasso.value)
+    drawLasso(lasso.value.points);
 
   renderLabelsOnly();
 }
@@ -1910,6 +1967,7 @@ function drawSelection(entity: Entity) {
     minX, maxY, minX, minY,
   ], [0.85, 0.5, 0.05, 1]);
 
+  // 遍历当前entity的handles,然后绘制出来
   for (const handle of selectionHandles(entity)) {
     drawHandle(handle.x, handle.y, handle.key === 'end' ? 'circle' : 'square');
   }
@@ -2210,6 +2268,7 @@ function drawStroke(vertices: number[], color: number[], width: number, loop = f
   drawTriangles(tris, color);
 }
 
+// 绘制直线：WEBGPU的数据格式要求，[x0,y0,x1,y1...]
 function drawLines(vertices: number[], color: number[], mode?: number) {
   if (!gl) return;
   const drawMode = mode ?? gl.LINES;
@@ -2217,6 +2276,7 @@ function drawLines(vertices: number[], color: number[], mode?: number) {
   gl.uniform4fv(colorLocation, color);
   gl.drawArrays(drawMode, 0, vertices.length / 2);
 }
+
 
 function drawTriangles(vertices: number[], color: number[]) {
   if (!gl) return;
@@ -2240,17 +2300,20 @@ function renderLabelsOnly() {
 
   for (const entity of entities) {
     if (!isLayerVisible(entity.layerId)) continue;
+    // 绘制尺寸
     drawDimension(ctx, entity);
-    if (entity.type === 'line' && shouldShowEndpointLabels(entity)) drawEndpointLabels(ctx, entity);
+    if (entity.type === 'line' && shouldShowEndpointLabels(entity))
+      drawEndpointLabels(ctx, entity);
   }
   drawHoverName(ctx);
 }
 
+// 绘制hover文本
 function drawHoverName(ctx: CanvasRenderingContext2D) {
   if (hoveredId.value === null) return;
   const entity = entities.find((item) => item.id === hoveredId.value);
   if (!entity) return;
-  const text = `${entityName(entity)} #${entity.id}`;
+  const text = `${entityName(entity)} #id = ${entity.id}`;
   const metrics = ctx.measureText(text);
   const width = metrics.width + 12;
   const x = hoverLabel.x;
@@ -2274,6 +2337,7 @@ function drawEndpointLabels(ctx: CanvasRenderingContext2D, entity: LineEntity) {
   drawEndpointName(ctx, '终', entity.x2, entity.y2, entity.x1, entity.y1);
 }
 
+// 绘制终点或者起点文字
 function drawEndpointName(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -2288,6 +2352,7 @@ function drawEndpointName(
   drawLabel(ctx, text, x + (dx / len) * 16 - 6, y + (dy / len) * 16);
 }
 
+// 绘制尺寸
 function drawDimension(ctx: CanvasRenderingContext2D, entity: Entity) {
   ctx.strokeStyle = '#1a7a45';
   ctx.fillStyle = '#1a7a45';
@@ -2394,8 +2459,7 @@ onMounted(async () => {
 
   entities.push(
     { id: nextId++, type: 'line', layerId: 1, x1: 125, y1: 125, x2: 300, y2: 125 },
-    { id: nextId++, type: 'circle', layerId: 1, cx: 450, cy: 220, r: 75 },
-    { id: nextId++, type: 'rect', layerId: 1, x: 150, y: 300, w: 225, h: 125 },
+        { id: nextId++, type: 'line', layerId: 1, x1: 100, y1: 12, x2: 200, y2: 100 },
   );
   render();
 });
