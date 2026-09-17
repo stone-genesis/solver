@@ -300,6 +300,27 @@
               </div>
             </template>
 
+            <template v-else-if="activeConstraintToolData.target === 'circle-pair'">
+              <div class="field">
+                <label>圆 A</label>
+                <select v-model.number="pendingConstraint.entityId">
+                  <option v-for="option in circleRefOptions" :key="`ca-${option.value}`" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                  <option v-if="!circleRefOptions.length" value="" disabled>暂无圆或椭圆</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>圆 B</label>
+                <select v-model.number="pendingConstraint.entityIdB">
+                  <option v-for="option in circleRefOptions" :key="`cb-${option.value}`" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                  <option v-if="!circleRefOptions.length" value="" disabled>暂无圆或椭圆</option>
+                </select>
+              </div>
+            </template>
+
             <template v-else-if="activeConstraintToolData.target === 'point'">
               <div class="field">
                 <label>目标点</label>
@@ -430,6 +451,7 @@ const constraintTools: ConstraintToolDef[] = [
   { id: 'perpendicular', label: '正交', icon: '⊥', title: '两直线互相垂直', target: 'line-pair' },
   { id: 'equalLength', label: '等长', icon: '=', title: '两直线保持等长', target: 'line-pair' },
   { id: 'angle', label: '角度', icon: '∠', title: '两直线保持指定夹角', target: 'line-pair' },
+  { id: 'concentric', label: '同心', icon: '◉', title: '两圆/椭圆保持同一圆心', target: 'circle-pair' },
 ];
 const layerColors = ['#111111', '#1a7a45', '#1d4ed8', '#b45309', '#b42318', '#6d28d9', '#0f766e'];
 
@@ -511,6 +533,13 @@ const lineRefOptions = computed(() =>
     .map((entity) => ({ value: entity.id, label: `${entityName(entity)} #${entity.id}` })),
 );
 
+// circleRefOptions 是同心约束用的「圆 / 椭圆」下拉选项
+const circleRefOptions = computed(() =>
+  visibleEntities.value
+    .filter((entity) => (entity.type === 'circle' || entity.type === 'ellipse') && !isLayerLocked(entity.layerId))
+    .map((entity) => ({ value: entity.id, label: `${entityName(entity)} #${entity.id}` })),
+);
+
 // 选中约束后约束目标的下拉列表
 const pointRefOptions = computed(() =>
   visibleEntities.value
@@ -531,6 +560,13 @@ const canCreatePendingConstraint = computed(() => {
     if (!ids.has(a) || !ids.has(b)) return false;
     if (toolData.id === 'angle') return Number.isFinite(Number(pendingConstraint.angle));
     return true;
+  }
+  if (toolData.target === 'circle-pair') {
+    const a = Number(pendingConstraint.entityId);
+    const b = Number(pendingConstraint.entityIdB);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return false;
+    const ids = new Set(circleRefOptions.value.map((option) => option.value));
+    return ids.has(a) && ids.has(b);
   }
   if (toolData.target === 'point') return Boolean(pendingConstraint.refA);
   if (toolData.target === 'point-pair') {
@@ -656,6 +692,19 @@ function primePendingConstraint(type: ConstraintType) {
     if (type === 'angle') syncPendingAngle();
     return;
   }
+  if (type === 'concentric') {
+    const selectedCircles = selectedEntities.value.filter(
+      (entity) => entity.type === 'circle' || entity.type === 'ellipse'
+    );
+    const fallbackA = circleRefOptions.value[0]?.value;
+    const fallbackB = circleRefOptions.value[1]?.value;
+    pendingConstraint.entityId = selectedCircles[0]?.id ?? (typeof fallbackA === 'number' ? fallbackA : '');
+    pendingConstraint.entityIdB = selectedCircles[1]?.id ?? (typeof fallbackB === 'number' ? fallbackB : '');
+    if (pendingConstraint.entityId === pendingConstraint.entityIdB) {
+      pendingConstraint.entityIdB = typeof fallbackB === 'number' ? fallbackB : '';
+    }
+    return;
+  }
   const preferredPoints = selectedEntities.value.flatMap(
         (entity) => constraintPointRefs(entity)
   );
@@ -697,6 +746,11 @@ function createConstraintFromPending() {
       { entityId: Number(pendingConstraint.entityIdB) }, //第二条直线
     ];
     if (toolData.id === 'angle') constraint.value = Number(pendingConstraint.angle);
+  } else if (toolData.target === 'circle-pair') {
+    constraint.refs = [
+      { entityId: Number(pendingConstraint.entityId) },
+      { entityId: Number(pendingConstraint.entityIdB) },
+    ];
   } else if (toolData.target === 'point') {
     const ref = decodePointRef(pendingConstraint.refA);
     const entity = entities.find((e) => e.id === ref.entityId);
@@ -712,6 +766,7 @@ function createConstraintFromPending() {
   removeRedundantDirectionalConstraints(constraint);
   removeRedundantCoincident(constraint);
   removeRedundantAngle(constraint);
+  removeRedundantConcentric(constraint);
   // 加入约束列表
   constraints.push(constraint);
   if (constraint.type === 'fixed') {
@@ -746,6 +801,20 @@ function removeRedundantAngle(nextConstraint: Constraint) {
   for (let i = constraints.length - 1; i >= 0; i -= 1) {
     const constraint = constraints[i];
     if (constraint.type !== 'angle') continue;
+    const ids = new Set(constraint.refs.map((ref) => ref.entityId));
+    if (ids.has(a) && ids.has(b)) constraints.splice(i, 1);
+  }
+}
+
+// 同心去重：同一对圆已有同心约束时，删掉旧的
+function removeRedundantConcentric(nextConstraint: Constraint) {
+  if (nextConstraint.type !== 'concentric') return;
+  const a = nextConstraint.refs[0]?.entityId;
+  const b = nextConstraint.refs[1]?.entityId;
+  if (!a || !b) return;
+  for (let i = constraints.length - 1; i >= 0; i -= 1) {
+    const constraint = constraints[i];
+    if (constraint.type !== 'concentric') continue;
     const ids = new Set(constraint.refs.map((ref) => ref.entityId));
     if (ids.has(a) && ids.has(b)) constraints.splice(i, 1);
   }
@@ -851,6 +920,9 @@ function constraintSummary(constraint: Constraint) {
   }
   if (constraint.type === 'fixed') {
     return constraintPointLabel(constraint.refs[0]);
+  }
+  if (constraint.type === 'concentric') {
+    return `${constraintEntityLabel(constraint.refs[0]?.entityId)} ◉ ${constraintEntityLabel(constraint.refs[1]?.entityId)}`;
   }
   if (constraint.type === 'coincident') {
     return `${constraintPointLabel(constraint.refs[0])} = ${constraintPointLabel(constraint.refs[1])}`;

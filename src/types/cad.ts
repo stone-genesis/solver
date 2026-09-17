@@ -31,9 +31,10 @@ export type ConstraintType =
   | 'parallel'
   | 'perpendicular'
   | 'equalLength'
-  | 'angle';
+  | 'angle'
+  | 'concentric';
 
-export type ConstraintTarget = 'line' | 'line-pair' | 'point' | 'point-pair';
+export type ConstraintTarget = 'line' | 'line-pair' | 'point' | 'point-pair' | 'circle-pair';
 
 export type PanelMode = 'properties' | 'constraints';
 

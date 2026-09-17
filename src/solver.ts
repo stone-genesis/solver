@@ -48,6 +48,7 @@ const SOLVER_CONSTRAINT_TYPES: ReadonlySet<ConstraintType> = new Set([
   'equalLength',
   'coincident',
   'angle',
+  'concentric',
 ]);
 
 function isSolverConstraint(constraint: Constraint) {
@@ -207,16 +208,20 @@ function lineResiduals(constraint: Constraint, a: LineCoords, b: LineCoords | nu
   }
 
   const lengthScale = (Math.hypot(dx1, dy1) + Math.hypot(dx2, dy2)) * 0.5 || 1;
+
+  // 角度约束
   if (constraint.type === 'angle') {
     if (!Number.isFinite(constraint.value)) return [];
     const target = (constraint.value as number) * Math.PI / 180;
-    const cross = dx1 * dy2 - dy1 * dx2;
-    const dot = dx1 * dx2 + dy1 * dy2;
+    const cross = dx1 * dy2 - dy1 * dx2; //叉乘
+    const dot = dx1 * dx2 + dy1 * dy2; // 数量积
     return [scale * (cross * Math.cos(target) - dot * Math.sin(target)) / lengthScale];
   }
+  // 点乘为0
   if (constraint.type === 'perpendicular') {
     return [scale * (dx1 * dx2 + dy1 * dy2) / lengthScale];
   }
+  // 叉乘为0
   if (constraint.type === 'parallel') {
     return [scale * (dx1 * dy2 - dy1 * dx2) / lengthScale];
   }
@@ -340,6 +345,12 @@ export function solveConstraints( entities: Entity[], constraints: Constraint[],
     return idx === undefined ? null : vec[idx];
   }
 
+  function centerOf(vec: number[], entityId: number): PointCoords | null {
+    const cx = valueOf(vec, entityId, 'cx');
+    const cy = valueOf(vec, entityId, 'cy');
+    return cx === null || cy === null ? null : { x: cx, y: cy };
+  }
+
   function coordsOf(vec: number[], entityId: number): LineCoords | null {
     const x1 = valueOf(vec, entityId, 'x1'); // (vec, id, key)
     const y1 = valueOf(vec, entityId, 'y1');
@@ -403,6 +414,14 @@ export function solveConstraints( entities: Entity[], constraints: Constraint[],
     if (constraint.type === 'coincident') {
       const a = pointOf(vec, constraint.refs[0]?.entityId, constraint.refs[0]?.handle);
       const b = pointOf(vec, constraint.refs[1]?.entityId, constraint.refs[1]?.handle);
+      if (!a || !b) return [];
+      return [constraintScale * (a.x - b.x), constraintScale * (a.y - b.y)];
+    }
+
+    // 同心：两个圆/椭圆的圆心重合，拆成 x、y 两条残差
+    if (constraint.type === 'concentric') {
+      const a = centerOf(vec, constraint.refs[0]?.entityId);
+      const b = centerOf(vec, constraint.refs[1]?.entityId);
       if (!a || !b) return [];
       return [constraintScale * (a.x - b.x), constraintScale * (a.y - b.y)];
     }
