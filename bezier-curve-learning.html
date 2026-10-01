@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bézier 曲线学习</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, "Microsoft YaHei", system-ui, sans-serif; background: #10151c; color: #eaf0f6; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    #app { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 100vh; }
+    #stage { position: relative; min-height: 620px; background: radial-gradient(circle at 45% 35%, #273a4a, #10151c 62%); }
+    canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+    .hud { position: absolute; top: 18px; left: 18px; padding: 10px 12px; border: 1px solid #4b6275; border-radius: 8px; background: #12202bdd; color: #cddbe6; font-size: 13px; line-height: 1.65; pointer-events: none; }
+    aside { padding: 22px; border-left: 1px solid #314352; background: #17212b; overflow: auto; }
+    h1 { margin: 0 0 8px; font-size: 21px; }
+    h2 { margin: 22px 0 10px; font-size: 15px; color: #a9c6dc; }
+    p { margin: 0; color: #b8c5cf; font-size: 13px; line-height: 1.65; }
+    .field { display: grid; gap: 6px; margin: 12px 0; color: #dce8f2; font-size: 13px; }
+    .field-head { display: flex; justify-content: space-between; }
+    output { color: #7bdcff; font-variant-numeric: tabular-nums; }
+    input, select, button { width: 100%; font: inherit; }
+    input[type="range"] { accent-color: #54c5ef; }
+    select, button { min-height: 34px; border: 1px solid #40596b; border-radius: 6px; background: #223442; color: #eaf0f6; padding: 6px 8px; }
+    button { cursor: pointer; background: #1d778f; border-color: #4dd0e8; font-weight: 600; }
+    button:hover { background: #2695ae; }
+    .value { padding: 10px; border-left: 3px solid #f4c95d; background: #1c2d39; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; line-height: 1.65; }
+    .selected-control { margin-top: -4px; color: #ffe486; font-size: 12px; }
+    .legend { display: grid; gap: 7px; margin-top: 12px; font-size: 12px; color: #b8c5cf; }
+    .dot { display: inline-block; width: 10px; height: 10px; margin-right: 7px; border-radius: 50%; vertical-align: -1px; }
+    code { color: #83e0ff; }
+    @media (max-width: 800px) { #app { grid-template-columns: 1fr; } #stage { min-height: 60vh; } aside { border-top: 1px solid #314352; border-left: 0; } }
+  </style>
+</head>
+<body>
+  <main id="app">
+    <section id="stage" aria-label="三次 Bézier 曲线与 De Casteljau 插值示意图">
+      <canvas id="curve-canvas"></canvas>
+      <div class="hud">拖动红色控制点可直接改变曲线<br />绿色、橙色点显示 De Casteljau 逐层线性插值</div>
+    </section>
+    <aside>
+      <h1>三次 Bézier 曲线</h1>
+      <p>四个控制点 (P_0,P_1,P_2,P_3) 定义一条三次曲线。拖动左侧红点，或在这里精确修改选中点。</p>
+      <div class="field">
+        <div class="field-head"><label for="t">t 参数</label><output id="t-out">0.50</output></div>
+        <input id="t" type="range" min="0" max="1" step="0.01" value="0.5" />
+      </div>
+
+      <h2>当前曲线点</h2>
+      <div class="value" id="curve-value">C(0.50) = (...)</div>
+
+      <h2>修改控制点</h2>
+      <div class="field">
+        <label for="control-select">控制点</label>
+        <select id="control-select">
+          <option value="0">P0</option><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option>
+        </select>
+        <div class="selected-control" id="selected-control">已高亮：P0</div>
+      </div>
+      <div class="field">
+        <div class="field-head"><label for="x">X 位置</label><output id="x-out"></output></div>
+        <input id="x" type="range" min="40" max="960" step="1" />
+      </div>
+      <div class="field">
+        <div class="field-head"><label for="y">Y 位置</label><output id="y-out"></output></div>
+        <input id="y" type="range" min="40" max="660" step="1" />
+      </div>
+      <button id="reset" type="button">恢复示例控制多边形</button>
+
+      <h2>两种等价计算</h2>
+      <p><code>C(t)=Σᵢ₌₀³Bᵢ³(t)Pᵢ</code></p>
+      <p style="margin-top:8px">画面中的绿点、橙点和黄点，是 De Casteljau 算法：每一层都按 <code>(1−t)A+tB</code> 线性插值。</p>
+      <div class="legend">
+        <span><i class="dot" style="background:#ef6a67"></i>控制点与控制多边形</span>
+        <span><i class="dot" style="background:#63d297"></i>第 1 层插值点</span>
+        <span><i class="dot" style="background:#ffad65"></i>第 2 层插值点</span>
+        <span><i class="dot" style="background:#f4c95d"></i>最终曲线点 C(t)</span>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const stage = document.querySelector('#stage');
+    const canvas = document.querySelector('#curve-canvas');
+    const ctx = canvas.getContext('2d');
+    const tInput = document.querySelector('#t');
+    const tOut = document.querySelector('#t-out');
+    const select = document.querySelector('#control-select');
+    const xInput = document.querySelector('#x');
+    const yInput = document.querySelector('#y');
+    const xOut = document.querySelector('#x-out');
+    const yOut = document.querySelector('#y-out');
+    const selectedControlText = document.querySelector('#selected-control');
+    const curveValue = document.querySelector('#curve-value');
+
+    const initialPoints = [
+      { x: 110, y: 510 }, { x: 285, y: 110 }, { x: 650, y: 610 }, { x: 900, y: 210 },
+    ];
+    let points = initialPoints.map(point => ({ ...point }));
+    let dragging = null;
+    let width = 1, height = 1;
+
+    function lerp(a, b, t) { return { x: (1 - t) * a.x + t * b.x, y: (1 - t) * a.y + t * b.y }; }
+    function deCasteljau(t) {
+      const level1 = [lerp(points[0], points[1], t), lerp(points[1], points[2], t), lerp(points[2], points[3], t)];
+      const level2 = [lerp(level1[0], level1[1], t), lerp(level1[1], level1[2], t)];
+      return { level1, level2, final: lerp(level2[0], level2[1], t) };
+    }
+    function line(list, color, width = 1.5, dash = []) {
+      ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash);
+      ctx.beginPath(); ctx.moveTo(list[0].x, list[0].y);
+      list.slice(1).forEach(point => ctx.lineTo(point.x, point.y));
+      ctx.stroke(); ctx.restore();
+    }
+    function circle(point, radius, fill, stroke = null, strokeWidth = 1) {
+      ctx.beginPath(); ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = fill; ctx.fill();
+      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = strokeWidth; ctx.stroke(); }
+    }
+    function label(point, text, color) {
+      ctx.fillStyle = color; ctx.font = '600 14px Inter, Microsoft YaHei, sans-serif';
+      ctx.fillText(text, point.x + 12, point.y - 12);
+    }
+    function drawGrid() {
+      ctx.save(); ctx.strokeStyle = '#294351'; ctx.lineWidth = 1;
+      for (let x = 0; x <= width; x += 50) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); }
+      for (let y = 0; y <= height; y += 50) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); }
+      ctx.restore();
+    }
+    function drawCurve() {
+      const curve = [];
+      for (let step = 0; step <= 120; step++) curve.push(deCasteljau(step / 120).final);
+      line(curve, '#5bc0eb', 4);
+    }
+    function draw() {
+      const ratio = devicePixelRatio || 1;
+      const rect = stage.getBoundingClientRect();
+      width = Math.max(1, rect.width); height = Math.max(1, rect.height);
+      canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      drawGrid();
+      const t = Number(tInput.value);
+      const cast = deCasteljau(t);
+      line(points, '#ef6a67', 1.5, [6, 6]);
+      drawCurve();
+      line(cast.level1, '#63d297', 1.8, [4, 4]);
+      line(cast.level2, '#ffad65', 2, [4, 4]);
+      cast.level1.forEach(point => circle(point, 6, '#63d297'));
+      cast.level2.forEach(point => circle(point, 7, '#ffad65'));
+      points.forEach((point, index) => {
+        const selected = index === Number(select.value);
+        if (selected) circle(point, 16, 'rgba(255,227,109,.28)', '#ffe36d', 2);
+        circle(point, selected ? 10 : 8, '#ef6a67', selected ? '#ffe36d' : '#ffaaa4', selected ? 2 : 1);
+        label(point, `P${index}`, '#ffd4d1');
+      });
+      circle(cast.final, 10, '#f4c95d', '#fff1a3', 2);
+      label(cast.final, 'C(t)', '#fff1a3');
+      tOut.value = t.toFixed(2);
+      curveValue.textContent = `C(${t.toFixed(2)}) = (${cast.final.x.toFixed(1)}, ${cast.final.y.toFixed(1)})`;
+    }
+    function syncSelected() {
+      const index = Number(select.value), point = points[index];
+      xInput.value = point.x; yInput.value = point.y;
+      xOut.value = point.x.toFixed(0); yOut.value = point.y.toFixed(0);
+      selectedControlText.textContent = `已高亮：P${index}（黄色外圈）`;
+      draw();
+    }
+    function eventPoint(event) {
+      const rect = canvas.getBoundingClientRect();
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    }
+    canvas.addEventListener('pointerdown', event => {
+      const cursor = eventPoint(event);
+      const hit = points.findIndex(point => Math.hypot(point.x - cursor.x, point.y - cursor.y) < 18);
+      if (hit >= 0) { dragging = hit; select.value = hit; canvas.setPointerCapture(event.pointerId); syncSelected(); }
+    });
+    canvas.addEventListener('pointermove', event => {
+      if (dragging === null) return;
+      const cursor = eventPoint(event);
+      points[dragging].x = Math.max(20, Math.min(width - 20, cursor.x));
+      points[dragging].y = Math.max(20, Math.min(height - 20, cursor.y));
+      syncSelected();
+    });
+    canvas.addEventListener('pointerup', () => { dragging = null; });
+    tInput.addEventListener('input', draw);
+    select.addEventListener('change', syncSelected);
+    xInput.addEventListener('input', () => { points[Number(select.value)].x = Number(xInput.value); syncSelected(); });
+    yInput.addEventListener('input', () => { points[Number(select.value)].y = Number(yInput.value); syncSelected(); });
+    document.querySelector('#reset').addEventListener('click', () => { points = initialPoints.map(point => ({ ...point })); syncSelected(); });
+    new ResizeObserver(draw).observe(stage);
+    syncSelected();
+  </script>
+</body>
+</html>

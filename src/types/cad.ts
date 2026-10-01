@@ -130,7 +130,7 @@ export type ToolDef = {
 };
 
 export type ConstraintToolDef = {
-  id: ConstraintType;
+  id: ConstraintType; //string类型的约束类型
   label: string;
   icon: string;
   title: string;

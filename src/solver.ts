@@ -161,6 +161,10 @@ function rectCorner(x: number, y: number, w: number, h: number, handle: string):
   return null;
 }
 
+// 高斯-约当消元法（Gauss-Jordan elimination）的实现，用来求解线性方程组 Ax = b
+// matrix: A
+// rhs: b
+// 返回结果是x
 function solveLinearSystem(matrix: number[][], rhs: number[]): number[] | null {
   const n = rhs.length;
   const augmented = matrix.map((row, i) => [...row, rhs[i]]);
@@ -202,30 +206,83 @@ function lineResiduals(constraint: Constraint, a: LineCoords, b: LineCoords | nu
   const dy1 = a.y2 - a.y1;
   const dx2 = b.x2 - b.x1;
   const dy2 = b.y2 - b.y1;
+  // DirA = (dx1,dy1)  DirB = (dx2,dy2)
+  // dot(DirA,DirB) = dx1 * dx2 + dy1 * dy2
 
   if (constraint.type === 'equalLength') {
     return [scale * (Math.hypot(dx1, dy1) - Math.hypot(dx2, dy2))];
   }
 
   const lengthScale = (Math.hypot(dx1, dy1) + Math.hypot(dx2, dy2)) * 0.5 || 1;
+  const cross = dx1 * dy2 - dy1 * dx2; //叉乘
+  const dot = dx1 * dx2 + dy1 * dy2; // 数量积
 
   // 角度约束
   if (constraint.type === 'angle') {
     if (!Number.isFinite(constraint.value)) return [];
     const target = (constraint.value as number) * Math.PI / 180;
-    const cross = dx1 * dy2 - dy1 * dx2; //叉乘
-    const dot = dx1 * dx2 + dy1 * dy2; // 数量积
     return [scale * (cross * Math.cos(target) - dot * Math.sin(target)) / lengthScale];
   }
-  // 点乘为0
+  // 点乘为0 
   if (constraint.type === 'perpendicular') {
-    return [scale * (dx1 * dx2 + dy1 * dy2) / lengthScale];
+    return [scale * (dot) / lengthScale];
   }
   // 叉乘为0
   if (constraint.type === 'parallel') {
-    return [scale * (dx1 * dy2 - dy1 * dx2) / lengthScale];
+    return [scale * (cross) / lengthScale];
   }
   return [];
+}
+
+/**
+ * 计算 Jᵀ × J（对称矩阵）
+ * @param J  m×n 矩阵（二维数组，m行n列）
+ * @returns  n×n 对称矩阵
+ */
+function matMulJtJ(J: number[][]): number[][] {
+  const m = J.length;
+  const n = J[0].length;
+  const result: number[][] = Array.from({ length: n }, () => new Array(n).fill(0));
+
+  for (let i = 0; i < m; i++) {
+    const row = J[i];
+    for (let j = 0; j < n; j++) {
+      const Jij = row[j];
+      if (Jij === 0) continue; // 稀疏优化
+      for (let k = j; k < n; k++) { // 只算上三角
+        result[j][k] += Jij * row[k];
+      }
+    }
+  }
+  // 镜像到下三角
+  for (let j = 0; j < n; j++) {
+    for (let k = 0; k < j; k++) {
+      result[j][k] = result[k][j];
+    }
+  }
+  return result;
+}
+
+/**
+ * 计算 Jᵀ × r
+ * @param J  m×n 矩阵
+ * @param r  m维向量
+ * @returns  n维向量
+ */
+function matMulJtr(J: number[][], r: number[]): number[] {
+  const m = J.length;
+  const n = J[0].length;
+  const result = new Array(n).fill(0);
+
+  for (let i = 0; i < m; i++) {
+    const ri = r[i];
+    if (ri === 0) continue;
+    const row = J[i];
+    for (let j = 0; j < n; j++) {
+      result[j] += row[j] * ri;
+    }
+  }
+  return result;
 }
 
 /**
@@ -240,8 +297,8 @@ export function solveConstraints( entities: Entity[], constraints: Constraint[],
   // 涉及的id
   const involvedIds = new Set<number>();
   for (const constraint of activeConstraints) {
-    for (const ref of constraint.refs) involvedIds.add(ref.entityId);
-    console.log("involvedIds", involvedIds);
+    for (const ref of constraint.refs) 
+        involvedIds.add(ref.entityId);
   }
   // involved entities
   const involvedEntityList = entities.filter((entity) => involvedIds.has(entity.id));
@@ -263,6 +320,7 @@ export function solveConstraints( entities: Entity[], constraints: Constraint[],
   if (!slots.length) return;
 
   // 调用slots里面每个slot的read方法读取原本的数值
+  // x是所有图形所有可以操作的属性的值（按照图形排列，先图形1的所有属性，然后图形2的所有属性...)
   const xPrev = slots.map((slot) => slot.read());
   const x = xPrev.slice();//浅拷贝整个数组
 
@@ -274,7 +332,7 @@ export function solveConstraints( entities: Entity[], constraints: Constraint[],
   const constraintWeight = options.constraintWeight ?? 1e4;
   const maxIterations = options.maxIterations ?? 25;
   const tolerance = options.tolerance ?? 1e-5;
-  const constraintScale = Math.sqrt(constraintWeight);
+  const constraintScale = Math.sqrt(constraintWeight);//100
 
   // skipStay 是一个"豁免名单"，记录哪些变量不需要加"stay(保持原位)残差"
   const skipStay = new Set<number>();
@@ -296,46 +354,43 @@ export function solveConstraints( entities: Entity[], constraints: Constraint[],
 
   // 求解过程
   for (let iter = 0; iter < maxIterations; iter += 1) {
-    const { residuals, jacobian, constraintCount } = jacobianNumeric(x);
+    // x是n*1, n代表变量的个数
+    // residuals是m*1,m代表方程数/残差数
+    const { residuals, jacobian, constraintCount } = jacobianNumeric(x);//计算残差r和jacobian矩阵
     if (residualNorm(residuals.slice(0, constraintCount)) < tolerance) {
       break;
     }
 
     const n = x.length;
+    // J矩阵： m*n   JtJ: n*n  jtr: n*1
     // JᵀJ：Jacobian（雅可比矩阵）的转置乘自身
     // Jᵀr：Jacobian 的转置乘残差向量
-    const jtj = Array.from({ length: n }, () => new Array<number>(n).fill(0));
-    const jtr = new Array<number>(n).fill(0);
-
-    // Jᵀr 做的是同一件事：对每个变量，把“该变量对每条残差的影响 × 那条残差当前有多大”全部加起来。
-    for (let i = 0; i < residuals.length; i += 1) {
-      for (let j = 0; j < n; j += 1) {
-        jtr[j] += jacobian[i][j] * residuals[i]; //jacobian矩阵的行元素 * residuals向量的对应元素
-        for (let k = 0; k < n; k += 1) {
-          jtj[j][k] += jacobian[i][j] * jacobian[i][k];//计算的是 JᵀJ
-        }
-      }
-    }
+    let jtj = Array.from({ length: n }, () => new Array<number>(n).fill(0));//n*n
+    let jtr = new Array<number>(n).fill(0);
+       
+    // 计算JᵀJ和Jᵀr
+    jtj = matMulJtJ(jacobian);
+    jtr = matMulJtr(jacobian, residuals);
 
     // JᵀJ + λI
-    const damping = 1e-6;
+    const damping = 1e-6; //阻尼
     for (let j = 0; j < n; j += 1) {
       jtj[j][j] += damping;
     }
 
-    const delta = solveLinearSystem(
+    // 正规方程求解（高斯消元） 求解deltaX
+    const deltaX = solveLinearSystem(
       jtj,
       jtr.map((value) => -value),
     );
-    if (!delta) break;
-    if (residualNorm(delta) < tolerance) break;
+    if (!deltaX) break;
 
     // delta 就是本轮应给各个图形参数加上的修正量
     for (let j = 0; j < n; j += 1)
-        x[j] += delta[j];
-  }
+        x[j] += deltaX[j];
+  }  
 
-  // 写回
+  // 写回(end)
   for (let i = 0; i < slots.length; i += 1) slots[i].write(x[i]);
 
 
@@ -409,12 +464,18 @@ export function solveConstraints( entities: Entity[], constraints: Constraint[],
     水平：100 * (y2 - y1) —— y 不等，就有一个数
     重合：100*(ax-bx), 100*(ay-by) —— 两点拆成两个数
     平行 / 垂直 / 等长 / 夹角：各 1 个数
+    
+    本质：r=f(x) 
+    computeResiduals(vec)：
+      就是把 n 维变量向量 x 代入一组几何公式和软约束公式，逐条算出 m 个标量结果，
+      然后拼成一个 m×1 的向量
    */
   function constraintResiduals(constraint: Constraint, vec: number[]): number[] {
     if (constraint.type === 'coincident') {
       const a = pointOf(vec, constraint.refs[0]?.entityId, constraint.refs[0]?.handle);
       const b = pointOf(vec, constraint.refs[1]?.entityId, constraint.refs[1]?.handle);
       if (!a || !b) return [];
+      //贡献2个残差，就是当前差多少的含义！！
       return [constraintScale * (a.x - b.x), constraintScale * (a.y - b.y)];
     }
 
@@ -423,6 +484,7 @@ export function solveConstraints( entities: Entity[], constraints: Constraint[],
       const a = centerOf(vec, constraint.refs[0]?.entityId);
       const b = centerOf(vec, constraint.refs[1]?.entityId);
       if (!a || !b) return [];
+      //贡献两个残差
       return [constraintScale * (a.x - b.x), constraintScale * (a.y - b.y)];
     }
 
@@ -492,13 +554,14 @@ export function solveConstraints( entities: Entity[], constraints: Constraint[],
             A.x1, A.y1, A.x2, A.y2,
             B.x1, B.y1, B.x2, B.y2
           ]
+    vec.length相当于变量的数量(n)
    */
   function jacobianNumeric(vec: number[]): { residuals: number[]; jacobian: number[][]; constraintCount: number; } {
     const eps = 1e-6;
     //  residuals[i]: 第 i 条误差方程当前的值
-    const { residuals, constraintCount } = computeResiduals(vec);
-    const m = residuals.length;
-    const n = vec.length;
+    const { residuals, constraintCount } = computeResiduals(vec);//计算r(x): m*1大小
+    const m = residuals.length; // 残差数量（矩阵行数）
+    const n = vec.length;       //变量数量（矩阵列数）
 
     // 创建一个m * n维度的jacobian矩阵
     const jacobian = Array.from({ length: m }, () => new Array<number>(n).fill(0));
@@ -506,10 +569,12 @@ export function solveConstraints( entities: Entity[], constraints: Constraint[],
     /*
         对每个变量 j：vec[j] += eps，再算一遍残差
         J[i][j] = (新残差[i] - 旧残差[i]) / eps
-
         J[i][j] = (r(x + εej) - r(x)) / ε 把某个坐标临时加 1e-6，重新算一遍残差，看变化量
         J[i][j]          = x[j] 微调时，residuals[i] 的变化速度
+         
+        ε * e_j 是一个“只在第 j 个位置有值、其余全为零”的稀疏向量
      */
+    // 对每一个变量 vec[j] 进行扰动 （n个变量),然后更新的是 Jacobian 矩阵的第 j 列
     for (let j = 0; j < n; j += 1) {
       const saved = vec[j];
       vec[j] = saved + eps; //添加微小扰动
@@ -517,7 +582,9 @@ export function solveConstraints( entities: Entity[], constraints: Constraint[],
       vec[j] = saved; //恢复vec[j]的值
 
       // 它更新的是 Jacobian 矩阵的第 j 列
+      // --- 计算扰动后的残差 r(x + εeⱼ) ---
       for (let i = 0; i < residuals.length; i += 1) {
+        //perturbed和residuals同维度大小
         jacobian[i][j] = (perturbed[i] - residuals[i]) / eps;
       }
     }
