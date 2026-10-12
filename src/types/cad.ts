@@ -32,9 +32,12 @@ export type ConstraintType =
   | 'perpendicular'
   | 'equalLength'
   | 'angle'
-  | 'concentric';
+  | 'concentric'
+  | 'length'
+  | 'distance'
+  | 'radius';
 
-export type ConstraintTarget = 'line' | 'line-pair' | 'point' | 'point-pair' | 'circle-pair';
+export type ConstraintTarget = 'line' | 'line-pair' | 'point' | 'point-pair' | 'circle-pair' | 'circle';
 
 export type PanelMode = 'properties' | 'constraints';
 
@@ -193,6 +196,7 @@ export type PendingConstraint = {
   refA: string;
   refB: string;
   angle: number | '';
+  length: number | '';
 };
 
 export type RefOption = {

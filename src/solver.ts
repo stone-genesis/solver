@@ -49,6 +49,9 @@ const SOLVER_CONSTRAINT_TYPES: ReadonlySet<ConstraintType> = new Set([
   'coincident',
   'angle',
   'concentric',
+  'length',
+  'distance',
+  'radius',
 ]);
 
 function isSolverConstraint(constraint: Constraint) {
@@ -182,7 +185,8 @@ function solveLinearSystem(matrix: number[][], rhs: number[]): number[] | null {
     }
 
     const diag = augmented[col][col];
-    for (let j = col; j <= n; j += 1) augmented[col][j] /= diag;
+    for (let j = col; j <= n; j += 1) 
+        augmented[col][j] /= diag;
 
     for (let row = 0; row < n; row += 1) {
       if (row === col) continue;
@@ -200,6 +204,11 @@ function solveLinearSystem(matrix: number[][], rhs: number[]): number[] | null {
 function lineResiduals(constraint: Constraint, a: LineCoords, b: LineCoords | null, scale: number): number[] {
   if (constraint.type === 'horizontal') return [scale * (a.y2 - a.y1)];
   if (constraint.type === 'vertical') return [scale * (a.x2 - a.x1)];
+  // 定长：当前长度与目标值之差
+  if (constraint.type === 'length') {
+    if (!Number.isFinite(constraint.value)) return [];
+    return [scale * (Math.hypot(a.x2 - a.x1, a.y2 - a.y1) - (constraint.value as number))];
+  }
   if (!b) return [];
 
   const dx1 = a.x2 - a.x1;
@@ -488,6 +497,23 @@ export function solveConstraints( entities: Entity[], constraints: Constraint[],
       return [constraintScale * (a.x - b.x), constraintScale * (a.y - b.y)];
     }
 
+    // 定半径：圆的 r 与目标值之差
+    if (constraint.type === 'radius') {
+      if (!Number.isFinite(constraint.value)) return [];
+      const r = valueOf(vec, constraint.refs[0]?.entityId, 'r');
+      if (r === null) return [];
+      return [constraintScale * (r - (constraint.value as number))];
+    }
+
+    // 定距：两点当前距离与目标值之差
+    if (constraint.type === 'distance') {
+      if (!Number.isFinite(constraint.value)) return [];
+      const a = pointOf(vec, constraint.refs[0]?.entityId, constraint.refs[0]?.handle);
+      const b = pointOf(vec, constraint.refs[1]?.entityId, constraint.refs[1]?.handle);
+      if (!a || !b) return [];
+      return [constraintScale * (Math.hypot(a.x - b.x, a.y - b.y) - (constraint.value as number))];
+    }
+
     const a = coordsOf(vec, constraint.refs[0]?.entityId);
     if (!a) return [];
     const b = constraint.refs[1] ? coordsOf(vec, constraint.refs[1].entityId) : null;
@@ -588,8 +614,6 @@ export function solveConstraints( entities: Entity[], constraints: Constraint[],
         jacobian[i][j] = (perturbed[i] - residuals[i]) / eps;
       }
     }
-
     return { residuals, jacobian, constraintCount };
   }
-
 }

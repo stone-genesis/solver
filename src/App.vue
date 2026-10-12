@@ -261,12 +261,21 @@
             <template v-if="activeConstraintToolData.target === 'line'">
               <div class="field">
                 <label>目标直线</label>
-                <select v-model.number="pendingConstraint.entityId">
+                <select v-model.number="pendingConstraint.entityId" @change="syncPendingDimension">
                   <option v-for="option in lineRefOptions" :key="option.value" :value="option.value">
                     {{ option.label }}
                   </option>
                   <option v-if="!lineRefOptions.length" value="" disabled>暂无直线</option>
                 </select>
+              </div>
+              <div v-if="activeConstraintTool === 'length'" class="field">
+                <label>长度</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0.1"
+                  v-model.number="pendingConstraint.length"
+                />
               </div>
             </template>
 
@@ -321,6 +330,27 @@
               </div>
             </template>
 
+            <template v-else-if="activeConstraintToolData.target === 'circle'">
+              <div class="field">
+                <label>目标圆</label>
+                <select v-model.number="pendingConstraint.entityId" @change="syncPendingDimension">
+                  <option v-for="option in circleOnlyRefOptions" :key="`ro-${option.value}`" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                  <option v-if="!circleOnlyRefOptions.length" value="" disabled>暂无圆</option>
+                </select>
+              </div>
+              <div v-if="activeConstraintTool === 'radius'" class="field">
+                <label>半径</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0.1"
+                  v-model.number="pendingConstraint.length"
+                />
+              </div>
+            </template>
+
             <template v-else-if="activeConstraintToolData.target === 'point'">
               <div class="field">
                 <label>目标点</label>
@@ -336,7 +366,7 @@
             <template v-else-if="activeConstraintToolData.target === 'point-pair'">
               <div class="field">
                 <label>点 A</label>
-                <select v-model="pendingConstraint.refA">
+                <select v-model="pendingConstraint.refA" @change="syncPendingDimension">
                   <option v-for="option in pointRefOptions" :key="`a-${option.value}`" :value="option.value">
                     {{ option.label }}
                   </option>
@@ -345,12 +375,21 @@
               </div>
               <div class="field">
                 <label>点 B</label>
-                <select v-model="pendingConstraint.refB">
+                <select v-model="pendingConstraint.refB" @change="syncPendingDimension">
                   <option v-for="option in pointRefOptions" :key="`b-${option.value}`" :value="option.value">
                     {{ option.label }}
                   </option>
                   <option v-if="!pointRefOptions.length" value="" disabled>暂无可选点</option>
                 </select>
+              </div>
+              <div v-if="activeConstraintTool === 'distance'" class="field">
+                <label>距离</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  v-model.number="pendingConstraint.length"
+                />
               </div>
             </template>
 
@@ -401,6 +440,7 @@ import type {
   Bounds,
   Entity,
   LineEntity,
+  CircleEntity,
   ArcEntity,
   TriangleEntity,
   PolylineEntity,
@@ -452,6 +492,9 @@ const constraintTools: ConstraintToolDef[] = [
   { id: 'equalLength', label: '等长', icon: '=', title: '两直线保持等长', target: 'line-pair' },
   { id: 'angle', label: '角度', icon: '∠', title: '两直线保持指定夹角', target: 'line-pair' },
   { id: 'concentric', label: '同心', icon: '◉', title: '两圆/椭圆保持同一圆心', target: 'circle-pair' },
+  { id: 'length', label: '定长', icon: '↔', title: '直线保持指定长度', target: 'line' },
+  { id: 'distance', label: '定距', icon: '⇹', title: '两点保持指定距离', target: 'point-pair' },
+  { id: 'radius', label: '半径', icon: '∅', title: '圆保持指定半径', target: 'circle' },
 ];
 const layerColors = ['#111111', '#1a7a45', '#1d4ed8', '#b45309', '#b42318', '#6d28d9', '#0f766e'];
 
@@ -495,6 +538,7 @@ const pendingConstraint = reactive<PendingConstraint>({
   refA: '',
   refB: '',
   angle: 45,
+  length: 100,
 });
 const undoStack = ref<HistorySnapshot[]>([]);
 const redoStack = ref<HistorySnapshot[]>([]);
@@ -540,6 +584,13 @@ const circleRefOptions = computed(() =>
     .map((entity) => ({ value: entity.id, label: `${entityName(entity)} #${entity.id}` })),
 );
 
+// circleOnlyRefOptions 是半径约束用的「圆」下拉选项（椭圆没有单一半径，排除）
+const circleOnlyRefOptions = computed(() =>
+  visibleEntities.value
+    .filter((entity) => entity.type === 'circle' && !isLayerLocked(entity.layerId))
+    .map((entity) => ({ value: entity.id, label: `${entityName(entity)} #${entity.id}` })),
+);
+
 // 选中约束后约束目标的下拉列表
 const pointRefOptions = computed(() =>
   visibleEntities.value
@@ -550,7 +601,16 @@ const canCreatePendingConstraint = computed(() => {
   const toolData = activeConstraintToolData.value;
   if (!toolData) return false;
   if (toolData.target === 'line') {
-    return lineRefOptions.value.some((option) => option.value === Number(pendingConstraint.entityId));
+    const hasLine = lineRefOptions.value.some((option) => option.value === Number(pendingConstraint.entityId));
+    if (!hasLine) return false;
+    if (toolData.id === 'length') return isValidDimension(pendingConstraint.length, 0.1);
+    return true;
+  }
+  if (toolData.target === 'circle') {
+    const hasCircle = circleOnlyRefOptions.value.some((option) => option.value === Number(pendingConstraint.entityId));
+    if (!hasCircle) return false;
+    if (toolData.id === 'radius') return isValidDimension(pendingConstraint.length, 0.1);
+    return true;
   }
   if (toolData.target === 'line-pair') {
     const a = Number(pendingConstraint.entityId);
@@ -570,7 +630,10 @@ const canCreatePendingConstraint = computed(() => {
   }
   if (toolData.target === 'point') return Boolean(pendingConstraint.refA);
   if (toolData.target === 'point-pair') {
-    return Boolean(pendingConstraint.refA && pendingConstraint.refB && pendingConstraint.refA !== pendingConstraint.refB);
+    const ok = Boolean(pendingConstraint.refA && pendingConstraint.refB && pendingConstraint.refA !== pendingConstraint.refB);
+    if (!ok) return false;
+    if (toolData.id === 'distance') return isValidDimension(pendingConstraint.length, 0);
+    return true;
   }
   return false;
 });
@@ -672,12 +735,14 @@ function primePendingConstraint(type: ConstraintType) {
   pendingConstraint.refA = '';
   pendingConstraint.refB = '';
   pendingConstraint.angle = 45;
+  pendingConstraint.length = 100;
   console.log("constraint type: ",type)
   const selectedLines = selectedEntities.value.filter((entity) => entity.type === 'line');
-  if (type === 'horizontal' || type === 'vertical') {
+  if (type === 'horizontal' || type === 'vertical' || type === 'length') {
     const fallback = lineRefOptions.value[0]?.value;
     console.log("fallback: ",fallback)
     pendingConstraint.entityId = selectedLines[0]?.id ?? (typeof fallback === 'number' ? fallback : '');
+    if (type === 'length') syncPendingDimension();
     return;
   }
   if (type === 'parallel' || type === 'perpendicular' || type === 'equalLength' || type === 'angle') {
@@ -705,6 +770,15 @@ function primePendingConstraint(type: ConstraintType) {
     }
     return;
   }
+  if (type === 'radius') {
+    const selectedCircles = selectedEntities.value.filter(
+      (entity): entity is CircleEntity => entity.type === 'circle'
+    );
+    const fallback = circleOnlyRefOptions.value[0]?.value;
+    pendingConstraint.entityId = selectedCircles[0]?.id ?? (typeof fallback === 'number' ? fallback : '');
+    syncPendingDimension();
+    return;
+  }
   const preferredPoints = selectedEntities.value.flatMap(
         (entity) => constraintPointRefs(entity)
   );
@@ -713,6 +787,7 @@ function primePendingConstraint(type: ConstraintType) {
   // pendingConstraint 是下拉框当前选中的值（v-model 绑的）,这里采用第一个值
   pendingConstraint.refA = String(options[0]?.value ?? '');
   pendingConstraint.refB = String(options[1]?.value ?? '');
+  if (type === 'distance') syncPendingDimension();
 }
 
 // 已知实体 + 手柄名，查出这个点当前的画布坐标。
@@ -751,6 +826,8 @@ function createConstraintFromPending() {
       { entityId: Number(pendingConstraint.entityId) },
       { entityId: Number(pendingConstraint.entityIdB) },
     ];
+  } else if (toolData.target === 'circle') {
+    constraint.refs = [{ entityId: Number(pendingConstraint.entityId) }];
   } else if (toolData.target === 'point') {
     const ref = decodePointRef(pendingConstraint.refA);
     const entity = entities.find((e) => e.id === ref.entityId);
@@ -762,11 +839,17 @@ function createConstraintFromPending() {
     constraint.refs = [decodePointRef(pendingConstraint.refA), decodePointRef(pendingConstraint.refB)];
   }
 
+  // 尺寸约束（定长/半径/定距）落下目标值
+  if (toolData.id === 'length' || toolData.id === 'radius' || toolData.id === 'distance') {
+    constraint.value = Number(pendingConstraint.length);
+  }
+
   recordHistory();
   removeRedundantDirectionalConstraints(constraint);
   removeRedundantCoincident(constraint);
   removeRedundantAngle(constraint);
   removeRedundantConcentric(constraint);
+  removeRedundantDimension(constraint);
   // 加入约束列表
   constraints.push(constraint);
   if (constraint.type === 'fixed') {
@@ -820,6 +903,25 @@ function removeRedundantConcentric(nextConstraint: Constraint) {
   }
 }
 
+/*
+  尺寸约束去重：同一目标（同一条线 / 同一个圆 / 同一对点）已有同类型尺寸约束时，删掉旧的。
+  distance 允许 A、B 互换视为同一对。
+*/
+function removeRedundantDimension(nextConstraint: Constraint) {
+  if (nextConstraint.type !== 'length' && nextConstraint.type !== 'radius' && nextConstraint.type !== 'distance') return;
+  const a = pointRefKey(nextConstraint.refs[0]);
+  const b = nextConstraint.refs[1] ? pointRefKey(nextConstraint.refs[1]) : '';
+  if (!a) return;
+  for (let i = constraints.length - 1; i >= 0; i -= 1) {
+    const constraint = constraints[i];
+    if (constraint.type !== nextConstraint.type) continue;
+    const ca = pointRefKey(constraint.refs[0]);
+    const cb = constraint.refs[1] ? pointRefKey(constraint.refs[1]) : '';
+    const samePair = (ca === a && cb === b) || (ca === b && cb === a);
+    if (samePair) constraints.splice(i, 1);
+  }
+}
+
 function directedLineAngle(a: LineEntity, b: LineEntity) {
   const dx1 = a.x2 - a.x1;
   const dy1 = a.y2 - a.y1;
@@ -838,6 +940,54 @@ function syncPendingAngle() {
     return;
   }
   pendingConstraint.angle = Math.round(directedLineAngle(a, b) * 10) / 10;
+}
+
+// 尺寸值是否合法（有限数且不小于 min）
+function isValidDimension(value: number | '', min: number) {
+  const num = Number(value);
+  return Number.isFinite(num) && num >= min && num !== 0;
+}
+
+/*
+  选定尺寸约束的目标后，把"当前测量值"回填到输入框（类似 syncPendingAngle）：
+    定长 → 当前线段长度
+    半径 → 当前圆半径
+    定距 → 两点当前距离
+  用户在此基础上修改目标值即可。
+*/
+function syncPendingDimension() {
+  const type = activeConstraintTool.value;
+  if (type !== 'length' && type !== 'radius' && type !== 'distance') return;
+
+  if (type === 'length') {
+    const line = entities.find(
+      (entity): entity is LineEntity => entity.id === Number(pendingConstraint.entityId) && entity.type === 'line'
+    );
+    pendingConstraint.length = line
+      ? Math.round(Math.hypot(line.x2 - line.x1, line.y2 - line.y1) * 10) / 10
+      : 100;
+    return;
+  }
+
+  if (type === 'radius') {
+    const circle = entities.find(
+      (entity): entity is CircleEntity => entity.id === Number(pendingConstraint.entityId) && entity.type === 'circle'
+    );
+    pendingConstraint.length = circle ? Math.round(circle.r * 10) / 10 : 50;
+    return;
+  }
+
+  const refA = decodePointRef(pendingConstraint.refA);
+  const refB = decodePointRef(pendingConstraint.refB);
+  const entityA = entities.find((item) => item.id === refA.entityId);
+  const entityB = entities.find((item) => item.id === refB.entityId);
+  const pa = entityA && refA.handle ? getPointByHandle(entityA, refA.handle) : null;
+  const pb = entityB && refB.handle ? getPointByHandle(entityB, refB.handle) : null;
+  if (!pa || !pb) {
+    pendingConstraint.length = 100;
+    return;
+  }
+  pendingConstraint.length = Math.round(Math.hypot(pa.x - pb.x, pa.y - pb.y) * 10) / 10;
 }
 
 function removeRedundantCoincident(nextConstraint: Constraint) {
@@ -920,6 +1070,18 @@ function constraintSummary(constraint: Constraint) {
   }
   if (constraint.type === 'fixed') {
     return constraintPointLabel(constraint.refs[0]);
+  }
+  if (constraint.type === 'length') {
+    const v = Number.isFinite(constraint.value) ? constraint.value : 0;
+    return `${constraintEntityLabel(constraint.refs[0]?.entityId)} 定长 ${v}`;
+  }
+  if (constraint.type === 'radius') {
+    const v = Number.isFinite(constraint.value) ? constraint.value : 0;
+    return `${constraintEntityLabel(constraint.refs[0]?.entityId)} 半径 ${v}`;
+  }
+  if (constraint.type === 'distance') {
+    const v = Number.isFinite(constraint.value) ? constraint.value : 0;
+    return `${constraintPointLabel(constraint.refs[0])} ↔ ${constraintPointLabel(constraint.refs[1])} = ${v}`;
   }
   if (constraint.type === 'concentric') {
     return `${constraintEntityLabel(constraint.refs[0]?.entityId)} ◉ ${constraintEntityLabel(constraint.refs[1]?.entityId)}`;
@@ -1323,11 +1485,50 @@ function screenPoint(event: { clientX: number; clientY: number }, options: { sna
   return point;
 }
 
+  function distance(x1: number, y1: number, x2: number, y2: number): number {
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      return Math.sqrt(dx * dx + dy * dy);
+  }
+
+// 吸附到特征点，比如直线两端
+function entitySnapPoints(entity: Entity): Point[] {
+  if (entity.type === 'line') {
+    return [{ x: entity.x1, y: entity.y1 }, { x: entity.x2, y: entity.y2 }];
+  }
+  if (entity.type === 'circle' || entity.type === 'ellipse') {
+    return [{ x: entity.cx, y: entity.cy }];   // 圆心
+  }
+  if (entity.type === 'arc' || entity.type === 'triangle' || entity.type === 'polyline') {
+    return entity.points;
+  }
+  if (entity.type === 'rect') {
+    const x2 = entity.x + entity.w;
+    const y2 = entity.y + entity.h;
+    return [
+      { x: entity.x, y: entity.y },
+      { x: x2, y: entity.y },
+      { x: x2, y: y2 },
+      { x: entity.x, y: y2 },
+    ];
+  }
+  return [];
+}
+
+function snapToFeaturePoint(point: Point): Point {
+  const tol = 15;
+  for (const entity of entities) {
+    if (!isLayerVisible(entity.layerId) || isLayerLocked(entity.layerId)) continue;
+    for (const sp of entitySnapPoints(entity)) {
+      if (distance(sp.x, sp.y, point.x, point.y) <= tol) return sp;
+    }
+  }
+  return point;
+}
+
+// 吸附点
 function snapPoint(point: Point) {
-  return {
-    x: Math.round(point.x / gridSize) * gridSize,
-    y: Math.round(point.y / gridSize) * gridSize,
-  };
+  return snapToFeaturePoint(point);
 }
 
 function closeContextMenu() {
@@ -1449,7 +1650,8 @@ function onPointerMove(event: PointerEvent) {
 
   // 移动已有图形不吸附网格；画新图仍按网格。
   const snapping = snapEnabled && tool.value !== 'lasso' && tool.value !== 'select' && !handleDrag.value && !drag.value;
-  const point = screenPoint(event, { snap: snapping });
+  // const point = screenPoint(event, { snap: snapping });
+  const point = screenPoint(event,{snap:true});
 
   // handleDrag: 当前移动的handle点的信息,包括entityId等
   if (handleDrag.value) {
