@@ -2,6 +2,10 @@
 
 A web-based CAD constraint solver application.
 
+## Example
+<img width="1904" height="877" alt="image" src="https://github.com/user-attachments/assets/f67c500e-54e2-401e-b22d-8cfbf8e39113" />
+
+
 ## Project Overview
 
 Constraint Solver is an interactive CAD constraint solver web application that supports the creation, editing, and solving of geometric constraints. The project includes the following main features:
