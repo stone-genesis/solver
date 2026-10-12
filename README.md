@@ -2,6 +2,10 @@
 
 一个基于 Web 的 CAD 约束求解器应用。
 
+## 例子
+<img width="1904" height="877" alt="image" src="https://github.com/user-attachments/assets/3742be91-9734-4829-bf77-86b0b663f25f" />
+
+
 ## 项目简介
 
 Constraint Solver 是一个交互式的 CAD 约束求解 Web 应用，支持几何约束的创建、编辑和求解。该项目包含以下主要功能：
